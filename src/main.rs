@@ -7,7 +7,7 @@ mod sql;
 async fn main() -> Result<(), Box<dyn Error>> {
     let router = server::router();
 
-    let adresss = "0.0.0.0:4000";
+    let adresss = "0.0.0.0:8080";
 
     println!("Starting server on {}", adresss);
 
