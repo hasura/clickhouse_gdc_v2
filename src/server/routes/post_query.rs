@@ -1,4 +1,4 @@
-use axum::{Json, TypedHeader};
+use axum::Json;
 use axum_extra::extract::WithRejection;
 
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
 
 #[axum_macros::debug_handler]
 pub async fn post_query(
-    SourceName(source_name): SourceName,
+    SourceName(_source_name): SourceName,
     SourceConfig(config): SourceConfig,
     WithRejection(Json(request), _): WithRejection<Json<QueryRequest>, ServerError>,
 ) -> Result<Json<QueryResponse>, ServerError> {
