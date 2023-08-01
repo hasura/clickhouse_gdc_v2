@@ -17,7 +17,7 @@ use crate::server::{
 #[axum_macros::debug_handler]
 pub async fn get_capabilities() -> Json<CapabilitiesResponse> {
     Json(CapabilitiesResponse {
-        display_name: Some("Rust Data Connector".to_owned()),
+        display_name: Some("Hasura v2 Clickhouse".to_owned()),
         release_name: Some("0.1.0".to_string()),
         config_schemas: ConfigSchemaResponse {
             config_schema: schema_for!(Config),
@@ -25,7 +25,6 @@ pub async fn get_capabilities() -> Json<CapabilitiesResponse> {
         },
         capabilities: Capabilities {
             comparisons: Some(ComparisonCapabilities {
-                // subquery: None,
                 subquery: Some(SubqueryComparisonCapabilities {
                     supports_relations: Some(true),
                 }),
@@ -44,7 +43,6 @@ pub async fn get_capabilities() -> Json<CapabilitiesResponse> {
             mutations: None,
             queries: Some(QueryCapabilities {
                 foreach: Some(serde_json::Value::Object(serde_json::Map::new())),
-                // foreach: None,
             }),
             raw: Some(serde_json::Value::Object(serde_json::Map::new())),
         },
