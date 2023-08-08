@@ -4,16 +4,20 @@ use serde_with::skip_serializing_none;
 
 use super::query_request::{ScalarType, TableName};
 
+#[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
+#[serde(rename_all = "snake_case")]
 pub struct SchemaResponse {
+    /// Available functions
+    pub functions: Option<Vec<FunctionInfo>>,
+    /// Object type definitions referenced in this schema
+    pub object_types: Option<Vec<ObjectTypeDefinition>>,
     /// Available tables
     pub tables: Vec<TableInfo>,
 }
 
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
 pub struct TableInfo {
     /// The columns of the table
     pub columns: Vec<ColumnInfo>,
@@ -37,7 +41,6 @@ pub struct TableInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[serde(bound = "")]
 pub enum TableType {
     Table,
     View,
@@ -45,7 +48,6 @@ pub enum TableType {
 
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
 pub struct ColumnInfo {
     /// Column description
     pub description: Option<String>,
@@ -56,9 +58,37 @@ pub struct ColumnInfo {
     /// Is column nullable
     pub nullable: bool,
     #[serde(rename = "type")]
-    pub column_type: ScalarType,
+    pub column_type: ColumnType,
     /// Whether or not the column can be updated
     pub updatable: Option<bool>,
+    pub value_generated: Option<ColumnValueGenerationStrategy>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ColumnType {
+    NonScalar(ColumnTypeNonScalar),
+    ScalarType(ScalarType),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum ColumnTypeNonScalar {
+    Object {
+        name: String,
+    },
+    Array {
+        element_type: Box<ColumnType>,
+        nullable: bool,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum ColumnValueGenerationStrategy {
+    DefaultValue {},
+    AutoIncrement {},
+    UniqueIdentifier {},
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,4 +97,64 @@ pub struct Constraint {
     pub column_mapping: IndexMap<String, String>,
     /// The fully qualified name of a table, where the last item in the array is the table name and any earlier items represent the namespacing of the table name
     pub foreign_table: TableName,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FunctionInfo {
+    /// argument info - name/types
+    args: Vec<FunctionInformationArgument>,
+    /// Description of the table
+    description: Option<String>,
+    name: FunctionName,
+    response_cardinality: FunctionCardinality,
+    returns: FunctionReturnType,
+    #[serde(rename = "type")]
+    function_type: FunctionType,
+}
+
+pub type FunctionName = Vec<String>;
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FunctionInformationArgument {
+    // The name of the argument
+    name: String,
+    /// If the argument can be omitted
+    optional: Option<bool>,
+    scalar_type: ScalarType,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum FunctionReturnType {
+    Table { table: TableName },
+    Unknown {},
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionCardinality {
+    One,
+    Many,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionType {
+    Read,
+    Write,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ObjectTypeDefinition {
+    /// The columns of the type
+    columns: Vec<ColumnInfo>,
+    /// The description of the type
+    description: Option<String>,
+    /// The name of the type
+    name: String,
 }
