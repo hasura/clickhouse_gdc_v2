@@ -1,17 +1,16 @@
 use axum::Json;
 use indexmap::IndexMap;
-use schemars::schema_for;
 
 use crate::server::{
     api::{
         capabilities_response::{
             Capabilities, CapabilitiesResponse, ColumnNullability, ComparisonCapabilities,
-            ConfigSchemaResponse, DataSchemaCapabilities, GraphQlType, QueryCapabilities,
-            ScalarTypeCapabilities, SubqueryComparisonCapabilities,
+            DataSchemaCapabilities, GraphQlType, QueryCapabilities, ScalarTypeCapabilities,
+            SubqueryComparisonCapabilities,
         },
         query_request::{ScalarType, SingleColumnAggregateFunction},
     },
-    config::Config,
+    config::get_config_schema_response,
 };
 
 #[axum_macros::debug_handler]
@@ -19,10 +18,7 @@ pub async fn get_capabilities() -> Json<CapabilitiesResponse> {
     Json(CapabilitiesResponse {
         display_name: Some("Hasura v2 Clickhouse".to_owned()),
         release_name: Some("0.1.0".to_string()),
-        config_schemas: ConfigSchemaResponse {
-            config_schema: schema_for!(Config),
-            other_schemas: IndexMap::new(),
-        },
+        config_schemas: get_config_schema_response(),
         capabilities: Capabilities {
             comparisons: Some(ComparisonCapabilities {
                 subquery: Some(SubqueryComparisonCapabilities {
@@ -71,6 +67,7 @@ fn scalar_types() -> IndexMap<ScalarType, ScalarTypeCapabilities> {
             Int256,
             Float32,
             Float64,
+            Decimal,
             Date,
             Date32,
             DateTime,
@@ -79,6 +76,7 @@ fn scalar_types() -> IndexMap<ScalarType, ScalarTypeCapabilities> {
             Uuid,
             IPv4,
             IPv6,
+            Complex,
         ]
         .into_iter()
         .map(|scalar_type| {
@@ -92,11 +90,13 @@ fn scalar_types() -> IndexMap<ScalarType, ScalarTypeCapabilities> {
                 Int64 | Int128 | Int256 => GraphQlType::String,
                 Float32 => GraphQlType::Float,
                 Float64 => GraphQlType::Float,
+                Decimal => GraphQlType::String,
                 Date | Date32 | DateTime | DateTime64 => GraphQlType::String,
                 Json => GraphQlType::String,
                 Uuid => GraphQlType::String,
                 IPv4 => GraphQlType::String,
                 IPv6 => GraphQlType::String,
+                Complex => GraphQlType::String,
             };
             let aggregate_functions = match &scalar_type {
                 Bool => None,
@@ -232,6 +232,15 @@ fn scalar_types() -> IndexMap<ScalarType, ScalarTypeCapabilities> {
                     (VarPop, Float64),
                     (VarSamp, Float64),
                 ])),
+                Decimal => Some(IndexMap::from_iter(vec![
+                    (Max, Decimal),
+                    (Min, Decimal),
+                    (StddevPop, Decimal),
+                    (StddevSamp, Decimal),
+                    (Sum, Decimal),
+                    (VarPop, Decimal),
+                    (VarSamp, Decimal),
+                ])),
                 Date => Some(IndexMap::from_iter(vec![(Max, Date), (Min, Date)])),
                 Date32 => Some(IndexMap::from_iter(vec![(Max, Date32), (Min, Date32)])),
                 DateTime => Some(IndexMap::from_iter(vec![(Max, DateTime), (Min, DateTime)])),
@@ -243,6 +252,7 @@ fn scalar_types() -> IndexMap<ScalarType, ScalarTypeCapabilities> {
                 Uuid => None,
                 IPv4 => None,
                 IPv6 => None,
+                Complex => None,
             };
             let comparison_operators = Some(IndexMap::from_iter(vec![]));
             let scalar_type_capabilities = ScalarTypeCapabilities {

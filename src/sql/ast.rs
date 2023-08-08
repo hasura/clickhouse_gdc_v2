@@ -290,7 +290,10 @@ pub enum Expr {
     InList {
         expr: Box<Expr>,
         list: Vec<Expr>,
-        negated: bool,
+    },
+    NotInList {
+        expr: Box<Expr>,
+        list: Vec<Expr>,
     },
 }
 
@@ -310,17 +313,12 @@ impl fmt::Display for Expr {
             Expr::IsNotFalse(expr) => write!(f, "{expr} IS NOT FALSE"),
             Expr::IsNull(expr) => write!(f, "{expr} IS NULL"),
             Expr::IsNotNull(expr) => write!(f, "{expr} IS NOT NULL"),
-            Expr::InList {
-                expr,
-                list,
-                negated,
-            } => write!(
-                f,
-                "{} {}IN ({})",
-                expr,
-                if *negated { "NOT " } else { "" },
-                display_separated(list, ", "),
-            ),
+            Expr::InList { expr, list } => {
+                write!(f, "{} IN ({})", expr, display_separated(list, ", "),)
+            }
+            Expr::NotInList { expr, list } => {
+                write!(f, "{} NOT IN ({})", expr, display_separated(list, ", "),)
+            }
         }
     }
 }

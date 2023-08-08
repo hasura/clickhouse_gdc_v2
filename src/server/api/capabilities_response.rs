@@ -1,6 +1,11 @@
+use std::collections::HashMap;
+
 use super::query_request::{BinaryComparisonOperator, ScalarType, SingleColumnAggregateFunction};
 use indexmap::IndexMap;
-use schemars::schema::RootSchema;
+use schemars::{
+    schema::{RootSchema, Schema, SchemaObject},
+    Map,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -17,8 +22,8 @@ pub struct CapabilitiesResponse {
 // other_schema will always be empty, as we won't use references
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ConfigSchemaResponse {
-    pub config_schema: RootSchema,
-    pub other_schemas: IndexMap<String, RootSchema>,
+    pub config_schema: SchemaObject,
+    pub other_schemas: Map<String, Schema>,
 }
 
 #[skip_serializing_none]

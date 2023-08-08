@@ -11,6 +11,7 @@ pub enum QueryBuilderError {
     UnsupportedColumnComparisonPath(Vec<String>),
     TableMissing(Vec<String>),
     RelationshipMissingInTable(String, Vec<String>),
+    MisshapenTableName(Vec<String>),
 }
 
 impl Display for QueryBuilderError {
@@ -38,6 +39,11 @@ impl Display for QueryBuilderError {
                 "Missing relationship {} in table {} in relationships reference",
                 relationship,
                 table.join(".")
+            ),
+            QueryBuilderError::MisshapenTableName(table) => write!(
+                f,
+                "Misshapen table name, expected an array with a single string member, got {:?}",
+                table
             ),
         }
     }

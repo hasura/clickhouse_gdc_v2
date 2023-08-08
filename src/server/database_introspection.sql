@@ -1,25 +1,20 @@
 SELECT toJSONString(
         cast(
-            tuple(
-                groupArray(
-                    cast(
-                        tuple(t.name, t.primary_key, t.type, t.columns),
-                        'Tuple(name Array(String), primary_key Array(String), type String, columns Array(Tuple(name String, type String, nullable Bool)))'
-                    )
-                )
+            groupArray(
+                tuple(t.name, t.primary_key, t.table_type, t.columns)
             ),
-            'Tuple(tables Array(Tuple(name Array(String), primary_key Array(String), type String, columns Array(Tuple(name String, type String, nullable Bool)))))'
+            'Array(Tuple(name String, primary_key Array(String), table_type String, columns Array(Tuple(name String, column_type String, nullable Bool))))'
         )
     ) AS "schema"
 FROM (
-        SELECT array(t.table_name) AS "name",
+        SELECT t.table_name AS "name",
             sc.primary_key AS "primary_key",
             toString(
                 cast(
                     t.table_type,
                     'Enum(\'table\' = 1, \'view\' = 2)'
                 )
-            ) AS "type",
+            ) AS "table_type",
             c.columns AS "columns"
         FROM INFORMATION_SCHEMA.TABLES AS t
             LEFT JOIN (
@@ -27,21 +22,10 @@ FROM (
                     c.table_schema,
                     c.table_name,
                     groupArray(
-                        cast(
-                            tuple(
-                                c.column_name,
-                                -- strip out surrounding `Nullable(T)
-                                -- strip out precision "(n)" from types that support it, eg. DateTime(9)
-                                -- this may need to be revised later, to instead create types for each available precision
-                                replaceRegexpOne(
-                                    replaceRegexpOne(
-                                        c.data_type,'^Nullable\((.*)\)$', '\1'),
-                                    '\(.*\)',
-                                    ''
-                                ),
-                                toBool(c.is_nullable)
-                            ),
-                            'Tuple(name String, type String, nullable Bool)'
+                        tuple(
+                            c.column_name,
+                            c.data_type,
+                            toBool(c.is_nullable)
                         )
                     ) AS "columns"
                 FROM INFORMATION_SCHEMA.COLUMNS AS c

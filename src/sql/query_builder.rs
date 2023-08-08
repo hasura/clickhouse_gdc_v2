@@ -5,8 +5,12 @@ use super::ast::{
     ObjectName, OrderByExpr, Query, SelectItem, Statement, TableFactor, TableWithJoins,
     UnaryOperator, Value, WindowSpec,
 };
-use crate::server::api::query_request;
+use crate::server::{
+    api::query_request::{self, ScalarType},
+    Config,
+};
 use indexmap::IndexMap;
+pub mod aliasing;
 mod error;
 pub use error::QueryBuilderError;
 
@@ -174,6 +178,10 @@ fn type_cast_string(scalar_type: &query_request::ScalarType) -> String {
         Int256 => "Nullable(Int256)",
         Float32 => "Nullable(Float32)",
         Float64 => "Nullable(Float64)",
+        // casting decimal to string. Not sure if this is correct.
+        // cannot cast to decimal without making a call on precision and scale
+        // could go for max precision, but impossible to know scale
+        Decimal => "Nullable(String)",
         Date => "Nullable(Date)",
         Date32 => "Nullable(Date32)",
         DateTime => "Nullable(DateTime)",
@@ -182,6 +190,7 @@ fn type_cast_string(scalar_type: &query_request::ScalarType) -> String {
         Uuid => "Nullable(UUID)",
         IPv4 => "Nullable(IPv4)",
         IPv6 => "Nullable(IPv6)",
+        Complex => "Nullable(String)",
     }
     .to_owned()
 }
@@ -627,13 +636,22 @@ impl<'a> QueryBuilder<'a> {
             });
 
         let row_columns_expressions = fields.iter().map(|(alias, field)| match field {
-            query_request::Field::Column { column, .. } => SelectItem::ExprWithAlias {
-                expr: Expr::CompoundIdentifier(vec![
-                    Ident::quoted("_origin"),
-                    Ident::quoted(column),
-                ]),
-                alias: Ident::quoted(format!("_projection.{alias}")),
-            },
+            query_request::Field::Column {
+                column,
+                column_type,
+            } => {
+                let identifier =
+                    Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(column)]);
+
+                let expr = match column_type {
+                    ScalarType::Complex => sql_function("toJSONString", vec![identifier]),
+                    _ => identifier,
+                };
+                SelectItem::ExprWithAlias {
+                    expr,
+                    alias: Ident::quoted(format!("_projection.{alias}")),
+                }
+            }
             query_request::Field::Relationship { .. } => SelectItem::ExprWithAlias {
                 expr: Expr::CompoundIdentifier(vec![
                     Ident::quoted(format!("_rel.{alias}")),
@@ -1045,11 +1063,14 @@ impl<'a> QueryBuilder<'a> {
                     Bool => Value::Null,
                     String | FixedString => Value::SingleQuotedString("".to_owned()),
                     UInt8 | UInt16 | UInt32 | UInt64 | UInt128 | UInt256 | Int8 | Int16 | Int32
-                    | Int64 | Int128 | Int256 | Float32 | Float64 => Value::Number("0".to_owned()),
+                    | Int64 | Int128 | Int256 | Float32 | Float64 | Decimal => {
+                        Value::Number("0".to_owned())
+                    }
                     Date | Date32 | DateTime | DateTime64 => Value::Null,
                     Json => Value::Null,
                     Uuid => Value::Null,
                     IPv4 | IPv6 => Value::Null,
+                    Complex => Value::Null,
                 };
                 sql_function("COALESCE", vec![column, Expr::Value(default_sorting_value)])
             }
@@ -1480,11 +1501,7 @@ impl<'a> QueryBuilder<'a> {
                     .collect();
 
                 let expr = match operator {
-                    query_request::BinaryArrayComparisonOperator::In => Expr::InList {
-                        expr,
-                        list,
-                        negated: false,
-                    },
+                    query_request::BinaryArrayComparisonOperator::In => Expr::InList { expr, list },
                 };
                 Ok((expr, vec![]))
             }

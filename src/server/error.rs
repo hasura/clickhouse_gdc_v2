@@ -2,7 +2,7 @@ use std::error::Error;
 
 use axum::{
     extract::rejection::{JsonRejection, TypedHeaderRejection},
-    http::StatusCode,
+    http::{StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 use axum_macros::FromRequest;
@@ -12,6 +12,7 @@ use crate::sql::QueryBuilderError;
 use super::api::error_response::{ErrorResponse, ErrorResponseType};
 
 pub enum ServerError {
+    NotFound(Uri),
     UncaughtError {
         details: Option<serde_json::Value>,
         message: String,
@@ -37,6 +38,11 @@ impl IntoResponse for ServerError {
                     message,
                     error_type,
                 }),
+            )
+                .into_response(),
+            Self::NotFound(uri) => (
+                StatusCode::NOT_FOUND,
+                format!("Path not found: {}", uri.path()),
             )
                 .into_response(),
         }

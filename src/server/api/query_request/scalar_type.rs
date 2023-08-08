@@ -19,6 +19,7 @@ pub enum ScalarType {
     Int256,
     Float32,
     Float64,
+    Decimal,
     Date,
     Date32,
     DateTime,
@@ -29,4 +30,5 @@ pub enum ScalarType {
     Uuid,
     IPv4,
     IPv6,
+    Complex,
 }
