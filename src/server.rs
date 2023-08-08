@@ -4,12 +4,13 @@ use axum::{
     routing::{get, post},
     Router,
 };
-
+use axum_tracing_opentelemetry::middleware::{OtelAxumLayer, OtelInResponseLayer};
 mod client;
 mod config;
 mod error;
 mod routes;
-use self::routes::*;
+use self::{error::ServerError, routes::*};
+pub use config::Config;
 
 pub fn router() -> Router {
     Router::new()
@@ -19,5 +20,15 @@ pub fn router() -> Router {
         .route("/mutation", post(post_mutation))
         .route("/raw", post(post_raw))
         .route("/explain", post(post_explain))
-        .route("/health", get(get_health))
+        .fallback(fallback)
+        // include trace context as header into the response
+        .layer(OtelInResponseLayer)
+        //start OpenTelemetry trace on incoming request
+        .layer(OtelAxumLayer::default())
+        .route("/health", get(get_health)) // request processed without span / trace
+}
+
+#[axum_macros::debug_handler]
+async fn fallback(uri: axum::http::Uri) -> impl axum::response::IntoResponse {
+    ServerError::NotFound(uri)
 }
