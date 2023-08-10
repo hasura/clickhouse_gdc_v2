@@ -263,9 +263,10 @@ impl<'a> QueryBuilder<'a> {
                         .fold(IndexMap::new(), |mut accumulator, foreach_row| {
                             for (key, value) in foreach_row.iter() {
                                 if let Some(foreach_column) = accumulator.get_mut(key) {
-                                    foreach_column.push(value.to_owned());
+                                    foreach_column.push(value.value.to_owned());
                                 } else {
-                                    accumulator.insert(key.to_owned(), vec![value.to_owned()]);
+                                    accumulator
+                                        .insert(key.to_owned(), vec![value.value.to_owned()]);
                                 }
                             }
                             accumulator
