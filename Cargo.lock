@@ -374,6 +374,9 @@ dependencies = [
  "clap",
  "indexmap 2.0.0",
  "init-tracing-opentelemetry",
+ "openapi_type",
+ "openapiv3",
+ "openapiv3-visit",
  "opentelemetry",
  "opentelemetry-otlp",
  "peg",
@@ -1157,6 +1160,51 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd8b5dd2ae5ed71462c540258bedcb51965123ad7e7ccf4b9a8cafaa4a63576d"
 
 [[package]]
+name = "openapi_type"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c83d154f18fc290951b6296d0b5bd81f139ec3680ddc6662e0837d2530d6006"
+dependencies = [
+ "indexmap 1.9.3",
+ "openapi_type_derive",
+ "openapiv3",
+ "serde_json",
+]
+
+[[package]]
+name = "openapi_type_derive"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43a85405503148ef79ddb54b8ce215698cac78ce7b157be5d6f64f014f47ec25"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals 0.28.0",
+ "syn 2.0.25",
+ "syn-path",
+]
+
+[[package]]
+name = "openapiv3"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b1a9f106eb0a780abd17ba9fca8e0843e3461630bcbe2af0ad4d5d3ba4e9aa4"
+dependencies = [
+ "indexmap 1.9.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "openapiv3-visit"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4caf6f26b1650900b5ffb5e517474037fdc82730aab4057136d197ae0a237006"
+dependencies = [
+ "openapiv3",
+]
+
+[[package]]
 name = "openssl"
 version = "0.10.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1634,7 +1682,7 @@ checksum = "109da1e6b197438deb6db99952990c7f959572794b80ff93707d55a232545e7c"
 dependencies = [
  "proc-macro2",
  "quote",
- "serde_derive_internals",
+ "serde_derive_internals 0.26.0",
  "syn 1.0.109",
 ]
 
@@ -1696,6 +1744,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e578a843d40b4189a4d66bba51d7684f57da5bd7c304c64e14bd63efbef49509"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.25",
 ]
 
 [[package]]
@@ -1839,6 +1898,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "syn-path"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c40b4e4a3be9177bb145940892deef508fdec35384019b1bf2a792ed696ca530"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.25",
 ]
 
 [[package]]
