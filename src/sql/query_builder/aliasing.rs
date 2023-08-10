@@ -247,13 +247,15 @@ fn aliased_table_name(table: &TableName, config: &Config) -> Result<TableName, Q
         Some(table_alias) if table.len() == 1 => table_alias,
         _ => return Err(QueryBuilderError::MisshapenTableName(table.to_owned())),
     };
-
-    if let Some(table_config) = config
-        .tables
-        .iter()
-        .find(|table_config| &table_config.alias == table_alias)
-    {
-        return Ok(vec![table_config.name.to_owned()]);
+    if let Some(tables) = &config.tables {
+        if let Some(table_config) = tables.iter().find(|table_config| {
+            table_config
+                .alias
+                .as_ref()
+                .is_some_and(|alias| alias == table_alias)
+        }) {
+            return Ok(vec![table_config.name.to_owned()]);
+        }
     }
 
     Ok(vec![table_alias.to_owned()])
@@ -269,17 +271,26 @@ fn aliased_column_name(
         _ => return Err(QueryBuilderError::MisshapenTableName(table.to_owned())),
     };
 
-    if let Some(table_config) = config.tables.iter().find(|table_config| {
-        // Match on either table alias or table name. We don't expect or really support any overlapp between any names or aliases
-        // This should make it easier for users who may not provide a table alias when intending to specify aliases for columns
-        &table_config.alias == table_alias || &table_config.name == table_alias
-    }) {
-        if let Some(column_config) = table_config
-            .columns
-            .iter()
-            .find(|column_config| &column_config.alias == column)
-        {
-            return Ok(column_config.name.to_owned());
+    if let Some(tables) = &config.tables {
+        if let Some(table_config) = tables.iter().find(|table_config| {
+            // Match on either table alias or table name. We don't expect or really support any overlapp between any names or aliases
+            // This should make it easier for users who may not provide a table alias when intending to specify aliases for columns
+            table_config
+                .alias
+                .as_ref()
+                .is_some_and(|alias| alias == table_alias)
+                || &table_config.name == table_alias
+        }) {
+            if let Some(columns) = &table_config.columns {
+                if let Some(column_config) = columns.iter().find(|column_config| {
+                    column_config
+                        .alias
+                        .as_ref()
+                        .is_some_and(|alias| alias == column)
+                }) {
+                    return Ok(column_config.name.to_owned());
+                }
+            }
         }
     }
 

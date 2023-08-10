@@ -105,13 +105,14 @@ struct ColumnIntrospection {
 }
 
 fn aliased_table_name(table_name: &str, config: &Config) -> String {
-    if let Some(table_config) = config
-        .tables
-        .iter()
-        .find(|table_config| table_config.name == table_name)
-    {
-        if !table_config.alias.is_empty() {
-            return table_config.alias.to_owned();
+    if let Some(tables) = &config.tables {
+        if let Some(table_config) = tables
+            .iter()
+            .find(|table_config| table_config.name == table_name)
+        {
+            if let Some(alias) = &table_config.alias {
+                return alias.to_owned();
+            }
         }
     }
 
@@ -119,18 +120,20 @@ fn aliased_table_name(table_name: &str, config: &Config) -> String {
 }
 
 fn aliased_column_name(table_name: &str, column_name: &str, config: &Config) -> String {
-    if let Some(table_config) = config
-        .tables
-        .iter()
-        .find(|table_config| table_config.name == table_name)
-    {
-        if let Some(column_config) = table_config
-            .columns
+    if let Some(tables) = &config.tables {
+        if let Some(table_config) = tables
             .iter()
-            .find(|column_config| column_config.name == column_name)
+            .find(|table_config| table_config.name == table_name)
         {
-            if !column_config.alias.is_empty() {
-                return column_config.alias.to_owned();
+            if let Some(columns) = &table_config.columns {
+                if let Some(column_config) = columns
+                    .iter()
+                    .find(|column_config| column_config.name == column_name)
+                {
+                    if let Some(alias) = &column_config.alias {
+                        return alias.to_owned();
+                    }
+                }
             }
         }
     }

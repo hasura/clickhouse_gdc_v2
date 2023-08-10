@@ -1,9 +1,22 @@
-use schemars::schema::{RootSchema, SchemaObject};
-use schemars::visit::{visit_schema_object, Visitor};
-use schemars::{schema_for, JsonSchema};
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::error::Error;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+use openapi_type::openapiv3::ReferenceOr;
+use openapi_type::{OpenapiSchema, OpenapiType};
+use openapiv3_visit::VisitMut;
+use serde::{Deserialize, Serialize};
+use serde_with::skip_serializing_none;
+use axum::{
+    async_trait,
+    extract::FromRequestParts,
+    http::{request::Parts, HeaderName, StatusCode},
+};
+
+use super::api::capabilities_response::ConfigSchemaResponse;
+
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, OpenapiType)]
 pub struct Config {
     /// The url for your clickhouse database
     pub url: String,
@@ -12,33 +25,28 @@ pub struct Config {
     /// The clickhouse password
     pub password: String,
     /// Optional additional configuration for tables
-    pub tables: Vec<TableConfig>,
+    pub tables: Option<Vec<TableConfig>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, OpenapiType)]
 pub struct TableConfig {
     /// The table name
     pub name: String,
     /// Optional alias for this table. Required if the table name is not a valid graphql name
-    pub alias: String,
+    pub alias: Option<String>,
     /// Optional configuration for table columns
-    pub columns: Vec<ColumnConfig>,
+    pub columns: Option<Vec<ColumnConfig>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize,  OpenapiType)]
 pub struct ColumnConfig {
     /// The column name
     pub name: String,
     /// Optional alias for this column. Required if the column name is not a valid graphql name
-    pub alias: String,
+    pub alias: Option<String>,
 }
-use axum::{
-    async_trait,
-    extract::FromRequestParts,
-    http::{request::Parts, HeaderName, StatusCode},
-};
-
-use super::api::capabilities_response::ConfigSchemaResponse;
 
 static CONFIG_HEADER: HeaderName = HeaderName::from_static("x-hasura-dataconnector-config");
 static SOURCE_HEADER: HeaderName = HeaderName::from_static("x-hasura-dataconnector-sourcename");
@@ -77,34 +85,72 @@ impl<S: Send + Sync> FromRequestParts<S> for SourceConfig {
     }
 }
 
-struct RenameReferences;
+struct RenamedSchema;
 
-impl Visitor for RenameReferences {
-    fn visit_schema_object(&mut self, schema: &mut SchemaObject) {
-        // rename all references to point to `#/other_schemas`, per the GDC spec: https://github.com/hasura/graphql-engine-mono/blob/main/dc-agents/DOCUMENTATION.md#capabilities-and-configuration-schema
-        schema.reference = schema
-            .reference
-            .as_mut()
-            .map(|reference| reference.replace("#/definitions", "#/other_schemas"));
-
-        visit_schema_object(self, schema);
+impl<'openapi> VisitMut<'openapi> for RenamedSchema {
+    fn visit_reference_or_schema_mut(
+        &mut self,
+        node: &'openapi mut ReferenceOr<openapiv3::Schema>,
+    ) {
+        match node {
+            ReferenceOr::Reference { reference } => {
+                *reference = reference.replace("#/components/schemas", "#/other_schemas");
+            }
+            ReferenceOr::Item(_) => {}
+        };
+    }
+    fn visit_reference_or_box_schema_mut(
+        &mut self,
+        node: &'openapi mut ReferenceOr<Box<openapiv3::Schema>>,
+    ) {
+        match node {
+            ReferenceOr::Reference { reference } => {
+                *reference = reference.replace("#/components/schemas", "#/other_schemas");
+            }
+            ReferenceOr::Item(_) => {}
+        };
     }
 }
 
-pub fn get_config_schema_response() -> ConfigSchemaResponse {
-    let mut schema = schema_for!(Config);
-    let mut visitor = RenameReferences;
+pub fn get_openapi_config_schema_response() -> ConfigSchemaResponse {
+    let OpenapiSchema {
+        schema,
+        dependencies,
+        ..
+    } = Config::schema();
+    
+    let mut config_schema = schema;
 
-    visitor.visit_root_schema(&mut schema);
+    RenamedSchema.visit_schema_mut(&mut config_schema);
 
-    let RootSchema {
-        schema: config_schema,
-        meta_schema: _,
-        definitions: other_schemas,
-    } = schema;
+    let other_schemas = HashMap::from_iter(dependencies.into_iter().filter_map(|(dependency_name, schema)| {
+        let OpenapiSchema {
+            schema: mut other_schema,
+            dependencies,
+            ..
+        } = schema;
+
+        assert!(dependencies.is_empty(), "It's my understanding dependencies should always be empty for items already in dependencies");
+        
+        if config_schema.schema_data.title.as_ref().is_some_and(|config_schema_name| config_schema_name == &dependency_name) {
+            None
+        } else {
+            RenamedSchema.visit_schema_mut(&mut other_schema);
+            Some((dependency_name, other_schema))
+        }
+    }));
 
     ConfigSchemaResponse {
         config_schema,
         other_schemas,
     }
+}
+
+
+#[test]
+fn generate_config_schema() -> Result<(), Box<dyn Error>> {
+    let schema = serde_json::to_string(&get_openapi_config_schema_response());
+
+    assert!(schema.is_ok(), "can generate config schema");
+    Ok(())
 }

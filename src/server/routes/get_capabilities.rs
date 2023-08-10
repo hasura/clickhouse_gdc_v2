@@ -10,7 +10,7 @@ use crate::server::{
         },
         query_request::{ScalarType, SingleColumnAggregateFunction},
     },
-    config::get_config_schema_response,
+    config::get_openapi_config_schema_response,
 };
 
 #[axum_macros::debug_handler]
@@ -18,7 +18,7 @@ pub async fn get_capabilities() -> Json<CapabilitiesResponse> {
     Json(CapabilitiesResponse {
         display_name: Some("Hasura v2 Clickhouse".to_owned()),
         release_name: Some("0.1.0".to_string()),
-        config_schemas: get_config_schema_response(),
+        config_schemas: get_openapi_config_schema_response(),
         capabilities: Capabilities {
             comparisons: Some(ComparisonCapabilities {
                 subquery: Some(SubqueryComparisonCapabilities {
