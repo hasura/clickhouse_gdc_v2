@@ -17,6 +17,7 @@ Please report any bugs by filing issues in this repo.
 - No support for mutations or subscriptions.
 - Table columns with complex types are supported as JSON strings, not full graphql types.
 - There is a currently a bug where the console UI will demand at least one entry for the tables array, and one entry for that table's columns. This should soon be fixed. For the time being, you may work around this by providing dummy values for both table an column names and aliases.
+- A bug in the generated SQL causes performance issues which are most apparent when querrying large tables. A fix has been designed and is currently being implemented.
 
 ## Using this connector
 
