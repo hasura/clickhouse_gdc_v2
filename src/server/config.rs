@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 use std::error::Error;
 
-use openapi_type::openapiv3::ReferenceOr;
-use openapi_type::{OpenapiSchema, OpenapiType};
-use openapiv3_visit::VisitMut;
-use serde::{Deserialize, Serialize};
-use serde_with::skip_serializing_none;
 use axum::{
     async_trait,
     extract::FromRequestParts,
     http::{request::Parts, HeaderName, StatusCode},
 };
+use openapi_type::openapiv3::ReferenceOr;
+use openapi_type::{OpenapiSchema, OpenapiType};
+use openapiv3_visit::VisitMut;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use serde_with::skip_serializing_none;
 
 use super::api::capabilities_response::ConfigSchemaResponse;
-
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, OpenapiType)]
@@ -40,7 +40,7 @@ pub struct TableConfig {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize,  OpenapiType)]
+#[derive(Debug, Clone, Serialize, Deserialize, OpenapiType)]
 pub struct ColumnConfig {
     /// The column name
     pub name: String,
@@ -113,39 +113,121 @@ impl<'openapi> VisitMut<'openapi> for RenamedSchema {
 }
 
 pub fn get_openapi_config_schema_response() -> ConfigSchemaResponse {
-    let OpenapiSchema {
-        schema,
-        dependencies,
-        ..
-    } = Config::schema();
-    
-    let mut config_schema = schema;
+    // let OpenapiSchema {
+    //     schema,
+    //     dependencies,
+    //     ..
+    // } = Config::schema();
 
-    RenamedSchema.visit_schema_mut(&mut config_schema);
+    // let mut config_schema = schema;
 
-    let other_schemas = HashMap::from_iter(dependencies.into_iter().filter_map(|(dependency_name, schema)| {
-        let OpenapiSchema {
-            schema: mut other_schema,
-            dependencies,
-            ..
-        } = schema;
+    // RenamedSchema.visit_schema_mut(&mut config_schema);
 
-        assert!(dependencies.is_empty(), "It's my understanding dependencies should always be empty for items already in dependencies");
-        
-        if config_schema.schema_data.title.as_ref().is_some_and(|config_schema_name| config_schema_name == &dependency_name) {
-            None
-        } else {
-            RenamedSchema.visit_schema_mut(&mut other_schema);
-            Some((dependency_name, other_schema))
-        }
-    }));
+    // let other_schemas = HashMap::from_iter(dependencies.into_iter().filter_map(|(dependency_name, schema)| {
+    //     let OpenapiSchema {
+    //         schema: mut other_schema,
+    //         dependencies,
+    //         ..
+    //     } = schema;
+
+    //     assert!(dependencies.is_empty(), "It's my understanding dependencies should always be empty for items already in dependencies");
+
+    //     if config_schema.schema_data.title.as_ref().is_some_and(|config_schema_name| config_schema_name == &dependency_name) {
+    //         None
+    //     } else {
+    //         RenamedSchema.visit_schema_mut(&mut other_schema);
+    //         Some((dependency_name, other_schema))
+    //     }
+    // }));
+
+    // ConfigSchemaResponse {
+    //     config_schema,
+    //     other_schemas,
+    // }
+
+    // above code generate config schema from config type.
+    // however, we cannot specify fields as nullable using these libraries, so hardcoding the config schema
+    // TODO: if config type is changed, config schema should be changed also.
+
+    let config_schema_json = json!({
+        "type": "object",
+        "nullable": false,
+        "properties": {
+            "url": {
+                "title": "URL",
+                "description": "The url for your clickhouse database",
+                "nullable": false,
+                "type": "string"
+            },
+            "username": {
+                "title": "Username",
+                "description": "The clickhouse user name",
+                "nullable": false,
+                "type": "string"
+            },
+            "password": {
+                "title": "Password",
+                "description": "The clickhouse password",
+                "nullable": false,
+                "type": "string"
+            },
+            "tables": {
+                "title": "Tables",
+                "description": "Optional additional configuration for tables",
+                "nullable": true,
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "nullable": true,
+                    "properties": {
+                        "name": {
+                            "title": "Name",
+                            "description": "The table name",
+                            "nullable": false,
+                            "type": "string"
+                        },
+                        "alias": {
+                            "title": "Alias",
+                            "description": "Optional alias for this table. Required if the table name is not a valid graphql name",
+                            "nullable": true,
+                            "type": "string"
+                        },
+                        "columns": {
+                            "description": "Optional configuration for table columns",
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "title": "Name",
+                                        "description": "The column name",
+                                        "nullable": false,
+                                        "type": "string"
+                                    },
+                                    "alias": {
+                                        "title": "Alias",
+                                        "description": "Optional alias for this column. Required if the column name is not a valid graphql name",
+                                        "nullable": true,
+                                        "type": "string"
+                                    }
+                                },
+                                "required": ["name"]
+                            }
+                        }
+                    },
+                    "required": ["name"]
+                }
+            }
+        },
+        "required": ["url", "username", "password"]
+    });
 
     ConfigSchemaResponse {
-        config_schema,
-        other_schemas,
+        config_schema: serde_json::from_value(config_schema_json).unwrap(),
+        other_schemas: serde_json::from_str("{}").unwrap(),
     }
 }
-
 
 #[test]
 fn generate_config_schema() -> Result<(), Box<dyn Error>> {
