@@ -14,24 +14,23 @@ pub struct Query {
     predicate: Option<Expr>,
     group_by: Vec<Expr>,
     order_by: Vec<OrderByExpr>,
-    limit: Option<Expr>,
-    offset: Option<Expr>,
+    limit_by: Option<LimitByExpr>,
+    limit: Option<u64>,
+    offset: Option<u64>,
 }
 
 impl Query {
-    pub fn new() -> Self {
+    pub fn new(projection: Vec<SelectItem>) -> Self {
         Self {
-            projection: Vec::new(),
-            from: Vec::new(),
+            projection,
+            from: vec![],
             predicate: None,
-            group_by: Vec::new(),
-            order_by: Vec::new(),
+            group_by: vec![],
+            order_by: vec![],
+            limit_by: None,
             limit: None,
             offset: None,
         }
-    }
-    pub fn projection(self, projection: Vec<SelectItem>) -> Self {
-        Self { projection, ..self }
     }
     pub fn from(self, from: Vec<TableWithJoins>) -> Self {
         Self { from, ..self }
@@ -45,10 +44,13 @@ impl Query {
     pub fn order_by(self, order_by: Vec<OrderByExpr>) -> Self {
         Self { order_by, ..self }
     }
-    pub fn limit(self, limit: Option<Expr>) -> Self {
+    pub fn limit_by(self, limit_by: Option<LimitByExpr>) -> Self {
+        Self { limit_by, ..self }
+    }
+    pub fn limit(self, limit: Option<u64>) -> Self {
         Self { limit, ..self }
     }
-    pub fn offset(self, offset: Option<Expr>) -> Self {
+    pub fn offset(self, offset: Option<u64>) -> Self {
         Self { offset, ..self }
     }
     pub fn boxed(self) -> Box<Self> {
@@ -71,6 +73,13 @@ impl fmt::Display for Query {
         if !self.order_by.is_empty() {
             write!(f, " ORDER BY {}", display_separated(&self.order_by, ", "))?;
         }
+        if let Some(limit_by) = &self.limit_by {
+            write!(f, " LIMIT {}", limit_by.limit)?;
+            if let Some(offset) = limit_by.offset {
+                write!(f, " OFFSET {}", offset)?;
+            }
+            write!(f, " BY {}", display_separated(&limit_by.by, ", "))?;
+        }
         if let Some(limit) = &self.limit {
             write!(f, " LIMIT {}", limit)?;
         }
@@ -79,6 +88,13 @@ impl fmt::Display for Query {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct LimitByExpr {
+    pub limit: u64,
+    pub offset: Option<u64>,
+    pub by: Vec<Expr>,
 }
 
 #[derive(Debug, Clone)]

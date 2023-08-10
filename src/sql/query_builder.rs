@@ -2,8 +2,8 @@ use std::vec;
 
 use super::ast::{
     BinaryOperator, Expr, Function, FunctionArgExpr, Ident, Join, JoinConstraint, JoinOperator,
-    ObjectName, OrderByExpr, Query, SelectItem, Statement, TableFactor, TableWithJoins,
-    UnaryOperator, Value, WindowSpec,
+    LimitByExpr, ObjectName, OrderByExpr, Query, SelectItem, Statement, TableFactor,
+    TableWithJoins, UnaryOperator, Value, WindowSpec,
 };
 use crate::server::{
     api::query_request::{self, ScalarType},
@@ -333,7 +333,7 @@ impl<'a> QueryBuilder<'a> {
             joins: vec![],
         }];
 
-        Ok(Query::new().projection(root_projection).from(root_from))
+        Ok(Query::new(root_projection).from(root_from))
     }
     fn query_subquery(
         &mut self,
@@ -520,10 +520,7 @@ impl<'a> QueryBuilder<'a> {
             },
         };
 
-        Ok(Query::new()
-            .projection(query_projection)
-            .from(query_from)
-            .boxed())
+        Ok(Query::new(query_projection).from(query_from).boxed())
     }
     fn rows_subquery(
         &mut self,
@@ -593,8 +590,6 @@ impl<'a> QueryBuilder<'a> {
             joins: vec![],
         }];
 
-        let rows_selection = self.limit_offset_expression(&query.limit, &query.offset);
-
         let rows_group_by = join_cols.iter().map(|&col| {
             Expr::CompoundIdentifier(vec![
                 Ident::quoted("_row"),
@@ -615,10 +610,8 @@ impl<'a> QueryBuilder<'a> {
             rows_group_by.collect()
         };
 
-        Ok(Query::new()
-            .projection(rows_projection)
+        Ok(Query::new(rows_projection)
             .from(rows_from)
-            .predicate(rows_selection)
             .group_by(rows_group_by)
             .boxed())
     }
@@ -676,23 +669,24 @@ impl<'a> QueryBuilder<'a> {
             None => vec![],
         };
 
-        let (order_by, order_by_joins) = self.order_by_expressions_joins(table, &query.order_by)?;
+        let (row_order_by, order_by_joins) =
+            self.order_by_expressions_joins(table, &query.order_by)?;
 
         let partition_cols = match foreach_columns {
             Some(foreach_columns) => join_cols.iter().chain(*foreach_columns).copied().collect(),
             None => join_cols.to_vec(),
         };
 
-        let row_number_expression = SelectItem::ExprWithAlias {
-            expr: self.row_number_expression(&partition_cols, order_by),
-            alias: Ident::quoted("_rn"),
-        };
-
         let row_projection = selection_columns_expressions
             .chain(row_columns_expressions)
             .chain(row_foreach_column_expressions)
-            .chain([row_number_expression])
-            .collect();
+            .collect::<Vec<_>>();
+
+        let row_projection = if row_projection.is_empty() {
+            vec![SelectItem::UnnamedExpr(Expr::Value(Value::Null))]
+        } else {
+            row_projection
+        };
 
         let (row_selection, exists_joins) = match &query.selection {
             Some(expression) => {
@@ -766,17 +760,21 @@ impl<'a> QueryBuilder<'a> {
                 .collect(),
         }];
 
-        let row_order_by = vec![OrderByExpr {
-            asc: None,
-            expr: Expr::CompoundIdentifier(vec![Ident::quoted("_rn")]),
-            nulls_first: None,
-        }];
+        let partion_rows_by = partition_cols
+            .into_iter()
+            .map(|col| Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(col)]))
+            .collect::<Vec<_>>();
 
-        Ok(Query::new()
-            .projection(row_projection)
+        let (limit_by, limit, offset) =
+            self.limit_by_limit_offset(partion_rows_by, &query.limit, &query.offset);
+
+        Ok(Query::new(row_projection)
             .from(row_from)
             .predicate(row_selection)
             .order_by(row_order_by)
+            .limit_by(limit_by)
+            .limit(limit)
+            .offset(offset)
             .boxed())
     }
     fn aggregates_subquery(
@@ -869,10 +867,6 @@ impl<'a> QueryBuilder<'a> {
             joins: vec![],
         }];
 
-        // todo: apply limit/offset here using where clause and row number
-        let aggregates_selection =
-            self.limit_offset_expression(&query.aggregates_limit, &query.offset);
-
         let aggregates_group_by = join_cols.iter().map(|&col| {
             Expr::CompoundIdentifier(vec![
                 Ident::quoted("_row"),
@@ -893,10 +887,8 @@ impl<'a> QueryBuilder<'a> {
             aggregates_group_by.collect()
         };
 
-        Ok(Query::new()
-            .projection(aggregates_projection)
+        Ok(Query::new(aggregates_projection)
             .from(aggregates_from)
-            .predicate(aggregates_selection)
             .group_by(aggregates_group_by)
             .boxed())
     }
@@ -908,7 +900,6 @@ impl<'a> QueryBuilder<'a> {
         query: &query_request::Query,
         foreach_columns: &Option<&[&String]>,
     ) -> Result<Box<Query>, QueryBuilderError> {
-        // todo: add columns needed for joinning to parent table here, if needed
         let selection_columns_expressions =
             join_cols.iter().map(|&col| SelectItem::ExprWithAlias {
                 expr: Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(col)]),
@@ -951,16 +942,16 @@ impl<'a> QueryBuilder<'a> {
             None => join_cols.to_vec(),
         };
 
-        let row_number_expression = SelectItem::ExprWithAlias {
-            expr: self.row_number_expression(&partition_cols, order_by),
-            alias: Ident::quoted("_rn"),
-        };
-
         let aggregate_projection = selection_columns_expressions
             .chain(aggregate_columns_expressions)
             .chain(aggregate_foreach_column_expressions)
-            .chain(vec![row_number_expression])
-            .collect();
+            .collect::<Vec<_>>();
+
+        let aggregate_projection = if aggregate_projection.is_empty() {
+            vec![SelectItem::UnnamedExpr(Expr::Value(Value::Null))]
+        } else {
+            aggregate_projection
+        };
 
         let (aggregate_selection, exists_joins) = match &query.selection {
             Some(expression) => {
@@ -979,16 +970,27 @@ impl<'a> QueryBuilder<'a> {
 
         let aggregate_from = vec![TableWithJoins {
             relation: TableFactor::Table {
-                name: ObjectName(table.iter().map(|s| Ident::quoted(s)).collect()),
+                name: ObjectName(table.iter().map(Ident::quoted).collect()),
                 alias: Some(Ident::quoted("_origin")),
             },
             joins: exists_joins.into_iter().chain(order_by_joins).collect(),
         }];
 
-        Ok(Query::new()
-            .projection(aggregate_projection)
+        let partion_rows_by = partition_cols
+            .into_iter()
+            .map(|col| Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(col)]))
+            .collect::<Vec<_>>();
+
+        let (limit_by, limit, offset) =
+            self.limit_by_limit_offset(partion_rows_by, &query.aggregates_limit, &query.offset);
+
+        Ok(Query::new(aggregate_projection)
             .from(aggregate_from)
             .predicate(aggregate_selection)
+            .order_by(order_by)
+            .limit_by(limit_by)
+            .limit(limit)
+            .offset(offset)
             .boxed())
     }
     fn order_by_expressions_joins(
@@ -1229,7 +1231,7 @@ impl<'a> QueryBuilder<'a> {
                         relationship
                             .target_table
                             .iter()
-                            .map(|s| Ident::quoted(s))
+                            .map(Ident::quoted)
                             .collect(),
                     ),
                     alias: Some(Ident::quoted("_origin")),
@@ -1238,8 +1240,7 @@ impl<'a> QueryBuilder<'a> {
             }];
             let join_group_by = group_by_cols.into_values().collect();
 
-            let join_subquery = Query::new()
-                .projection(join_projection)
+            let join_subquery = Query::new(join_projection)
                 .from(join_from)
                 .predicate(join_selection)
                 .group_by(join_group_by)
@@ -1278,76 +1279,6 @@ impl<'a> QueryBuilder<'a> {
             joins.extend(child_joins);
         }
         Ok((parent_join_columns, joins))
-    }
-    fn row_number_expression(
-        &mut self,
-        partition_by: &[&String],
-        order_by: Vec<OrderByExpr>,
-    ) -> Expr {
-        // todo: partition by any columns we used to join the relationship.
-        let partition_by = partition_by
-            .iter()
-            .map(|&col| {
-                Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(col)])
-            })
-            .collect();
-        Expr::Function(Function {
-            name: ObjectName(vec![Ident::unquoted("row_number")]),
-            args: vec![],
-            over: Some(WindowSpec {
-                partition_by,
-                order_by,
-            }),
-            distinct: false,
-        })
-    }
-    fn limit_offset_expression(
-        &mut self,
-        limit: &Option<serde_json::Number>,
-        offset: &Option<serde_json::Number>,
-    ) -> Option<Expr> {
-        match (limit, offset) {
-            (None, None) => None,
-            (None, Some(offset)) => Some(Expr::BinaryOp {
-                left: Box::new(Expr::CompoundIdentifier(vec![
-                    Ident::quoted("_row"),
-                    Ident::quoted("_rn"),
-                ])),
-                op: BinaryOperator::Gt,
-                right: Box::new(Expr::Value(Value::Number(offset.to_string()))),
-            }),
-            (Some(limit), None) => Some(Expr::BinaryOp {
-                left: Box::new(Expr::CompoundIdentifier(vec![
-                    Ident::quoted("_row"),
-                    Ident::quoted("_rn"),
-                ])),
-                op: BinaryOperator::LtEq,
-                right: Box::new(Expr::Value(Value::Number(limit.to_string()))),
-            }),
-            (Some(limit), Some(offset)) => Some(Expr::BinaryOp {
-                left: Box::new(Expr::BinaryOp {
-                    left: Box::new(Expr::CompoundIdentifier(vec![
-                        Ident::quoted("_row"),
-                        Ident::quoted("_rn"),
-                    ])),
-                    op: BinaryOperator::Gt,
-                    right: Box::new(Expr::Value(Value::Number(offset.to_string()))),
-                }),
-                op: BinaryOperator::And,
-                right: Box::new(Expr::BinaryOp {
-                    left: Box::new(Expr::CompoundIdentifier(vec![
-                        Ident::quoted("_row"),
-                        Ident::quoted("_rn"),
-                    ])),
-                    op: BinaryOperator::LtEq,
-                    right: Box::new(Expr::Value(Value::Number(
-                        // todo: this is probably safe, but could also not be.
-                        // handle failure gracefully, by returning an error
-                        (limit.as_u64().unwrap() + offset.as_u64().unwrap()).to_string(),
-                    ))),
-                }),
-            }),
-        }
     }
     fn selection_expression(
         &mut self,
@@ -1538,7 +1469,7 @@ impl<'a> QueryBuilder<'a> {
                                     alias: Ident::quoted("_exists"),
                                 }];
                                 let group_by = vec![];
-                                let limit = Some(Expr::Value(Value::Number("1".to_string())));
+                                let limit = Some(1);
                                 (
                                     select_expr,
                                     join_expr,
@@ -1626,14 +1557,13 @@ impl<'a> QueryBuilder<'a> {
 
                     let from = vec![TableWithJoins {
                         relation: TableFactor::Table {
-                            name: ObjectName(table_name.iter().map(|s| Ident::quoted(s)).collect()),
+                            name: ObjectName(table_name.iter().map(Ident::quoted).collect()),
                             alias: Some(Ident::quoted(join_alias.clone())),
                         },
                         joins,
                     }];
 
-                    let subquery = Query::new()
-                        .projection(projection)
+                    let subquery = Query::new(projection)
                         .from(from)
                         .predicate(Some(selection))
                         .group_by(group_by)
@@ -1720,7 +1650,7 @@ impl<'a> QueryBuilder<'a> {
                     let join = Join {
                         join_operator: JoinOperator::LeftOuter(JoinConstraint::On(join_expr)),
                         relation: TableFactor::Table {
-                            name: ObjectName(table_name.iter().map(|s| Ident::quoted(s)).collect()),
+                            name: ObjectName(table_name.iter().map(Ident::quoted).collect()),
                             alias: Some(Ident::quoted(join_alias)),
                         },
                     };
@@ -1786,6 +1716,44 @@ impl<'a> QueryBuilder<'a> {
                     }
                 },
             }
+        }
+    }
+    fn limit_by_limit_offset(
+        &self,
+        partion_rows_by: Vec<Expr>,
+        limit: &Option<serde_json::Number>,
+        offset: &Option<serde_json::Number>,
+    ) -> (Option<LimitByExpr>, Option<u64>, Option<u64>) {
+        if partion_rows_by.is_empty() {
+            (
+                None,
+                limit
+                    .as_ref()
+                    .map(|limit| limit.as_u64().expect("limit should be valid u64")),
+                offset
+                    .as_ref()
+                    .map(|offset| offset.as_u64().expect("offset should be valid u64")),
+            )
+        } else {
+            let limit_by = match (limit.as_ref(), offset.as_ref()) {
+                (None, None) => None,
+                (None, Some(offset)) => Some(LimitByExpr {
+                    limit: u64::MAX,
+                    offset: Some(offset.as_u64().expect("offset should be valid u64")),
+                    by: partion_rows_by,
+                }),
+                (Some(limit), None) => Some(LimitByExpr {
+                    limit: limit.as_u64().expect("limit should be valid u64"),
+                    offset: None,
+                    by: partion_rows_by,
+                }),
+                (Some(limit), Some(offset)) => Some(LimitByExpr {
+                    limit: limit.as_u64().expect("limit should be valid u64"),
+                    offset: Some(offset.as_u64().expect("offset should be valid u64")),
+                    by: partion_rows_by,
+                }),
+            };
+            (limit_by, None, None)
         }
     }
 }
