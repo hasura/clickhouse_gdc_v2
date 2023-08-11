@@ -29,3 +29,33 @@ Please report any bugs by filing issues in this repo.
 
 You can use the new [Hasura Data Connector Plugin](https://hasura.io/docs/latest/hasura-cli/connector-plugin/) for the
 Hasura CLI to deploy this connector to Hasura Cloud.
+
+## Using environment variables for secrets
+
+Setting username and password in the UI will result in these values being stored in your metadata.
+This may be undesirable if your metadata is being stored in a git repository for example.
+
+To use environment variables, you can follow these steps:
+
+0. Configure your data source as per the above instructions. This may mean temporarily inputing your password into the UI.
+1. Create environment variables for any of username, password, url. On hasura cloud you will do this from the dashboard.
+2. Export your metadata json file from the console settings. We will be editing this file.
+3. Locate your data source configuration within the file. This will be under `metadata.sources[n].configuration`, where sources is an array.
+4. Set the template key in the configuration object to the string template below:
+
+```json
+{
+  "template": "{\"password\":{{$env?[$config.password] ?? $config.password}},\"url\": {{$env?[$config.url] ?? $config.url}},\"username\": {{$env?[$config.username] ?? $config.username}},\"tables\":{{$config?.tables}}}",
+  "timeout": null,
+  "value": {
+    /* config ommited */
+  }
+}
+```
+
+5. The template checks if the value of url, username, and password are also the names of environment variables. If that is true, the value of the environment variable is used. If not, default to the username, password, url values in config.
+6. To set the url from an environment variable (Optional): in the configuration value, update the `url` key to the name of the env var you wish to use.
+7. To set the username from an environment variable (Optional): in the configuration value, update the `username` key to the name of the env var you wish to use.
+8. To set the password from an environment variable (Optional): in the configuration value, update the `passwird` key to the name of the env var you wish to use.
+9. Finally, save the file, and import this metadata to your project from the UI.
+10. Important: If you update your configuration from the UI, **the template will be lost and you will need to follow the above steps again**. We are working to resolve this issue.
