@@ -37,8 +37,8 @@ This may be undesirable if for example your metadata is being stored in a git re
 
 To use environment variables, you can set the following kriti template under advanced settings when configuring your datasource.
 
-```json
-{\"password\":{{$env?[$config.password] ?? $config.password}},\"url\": {{$env?[$config.url] ?? $config.url}},\"username\": {{$env?[$config.username] ?? $config.username}},\"tables\":{{$config?.tables}}}
+```
+{"password":{{$env?[$config.password] ?? $config.password}},"url": {{$env?[$config.url] ?? $config.url}},"username": {{$env?[$config.username] ?? $config.username}},"tables":{{$config?.tables}}}
 ```
 
 Then, you can create an environment variable for your password, and set the value of password in the config to the name of that environment variable.
