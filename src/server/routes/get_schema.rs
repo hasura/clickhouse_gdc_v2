@@ -29,62 +29,56 @@ pub async fn get_schema(
 
     let introspection: Vec<TableIntrospection> = serde_json::from_str(&response)?;
 
-    let response =
-        SchemaResponse {
-            functions: None,
-            object_types: None,
-            tables: introspection
-                .into_iter()
-                .map(|table| {
-                    let TableIntrospection {
-                        name: table_name,
-                        table_type,
-                        primary_key,
-                        columns,
-                    } = table;
+    let response = SchemaResponse {
+        functions: None,
+        object_types: None,
+        tables: introspection
+            .into_iter()
+            .map(|table| {
+                let TableIntrospection {
+                    name: table_name,
+                    table_type,
+                    primary_key,
+                    columns,
+                } = table;
 
-                    Ok(TableInfo {
-                        name: vec![aliased_table_name(&table_name, &config)],
-                        description: None,
-                        table_type: Some(table_type),
-                        primary_key: Some(primary_key),
-                        foreign_keys: None,
-                        insertable: None,
-                        updatable: None,
-                        deletable: None,
-                        columns: columns
-                            .into_iter()
-                            .map(|column| {
-                                let ColumnIntrospection {
-                                    name: column_name,
-                                    column_type,
-                                    nullable,
-                                } = column;
+                Ok(TableInfo {
+                    name: vec![aliased_table_name(&table_name, &config)],
+                    description: None,
+                    table_type: Some(table_type),
+                    primary_key: Some(primary_key),
+                    foreign_keys: None,
+                    insertable: None,
+                    updatable: None,
+                    deletable: None,
+                    columns: columns
+                        .into_iter()
+                        .map(|column| {
+                            let ColumnIntrospection {
+                                name: column_name,
+                                column_type,
+                                nullable,
+                            } = column;
 
-                                let data_type = clickhouse_parser::data_type(&column_type)
-                                    .map_err(|err| ServerError::UncaughtError {
-                                        details: None,
-                                        message: err.to_string(),
-                                        error_type: ErrorResponseType::UncaughtError,
-                                    })?;
+                            let scalar_type = clickhouse_parser::data_type(&column_type)
+                                .map(|data_type| get_scalar_type(&data_type))
+                                .unwrap_or(ScalarType::Complex);
 
-                                let scalar_type = get_scalar_type(&data_type)?;
-
-                                Ok(ColumnInfo {
-                                    name: aliased_column_name(&table_name, &column_name, &config),
-                                    description: None,
-                                    nullable,
-                                    insertable: None,
-                                    updatable: None,
-                                    value_generated: None,
-                                    column_type: ColumnType::ScalarType(scalar_type),
-                                })
+                            Ok(ColumnInfo {
+                                name: aliased_column_name(&table_name, &column_name, &config),
+                                description: None,
+                                nullable,
+                                insertable: None,
+                                updatable: None,
+                                value_generated: None,
+                                column_type: ColumnType::ScalarType(scalar_type),
                             })
-                            .collect::<Result<_, ServerError>>()?,
-                    })
+                        })
+                        .collect::<Result<_, ServerError>>()?,
                 })
-                .collect::<Result<_, ServerError>>()?,
-        };
+            })
+            .collect::<Result<_, ServerError>>()?,
+    };
 
     Ok(Json(response))
 }
@@ -141,9 +135,9 @@ fn aliased_column_name(table_name: &str, column_name: &str, config: &Config) -> 
     column_name.to_owned()
 }
 
-fn get_scalar_type(data_type: &DataType) -> Result<ScalarType, ServerError> {
+fn get_scalar_type(data_type: &DataType) -> ScalarType {
     let scalar_type = match data_type {
-        DataType::Nullable(inner) => get_scalar_type(inner)?,
+        DataType::Nullable(inner) => get_scalar_type(inner),
         DataType::Bool => ScalarType::Bool,
         DataType::String => ScalarType::String,
         DataType::FixedString(_) => ScalarType::String,
@@ -174,16 +168,16 @@ fn get_scalar_type(data_type: &DataType) -> Result<ScalarType, ServerError> {
         DataType::Uuid => ScalarType::Uuid,
         DataType::IPv4 => ScalarType::IPv4,
         DataType::IPv6 => ScalarType::IPv6,
-        DataType::LowCardinality(inner) => get_scalar_type(inner)?,
+        DataType::LowCardinality(inner) => get_scalar_type(inner),
         DataType::Nested(_) => ScalarType::Complex,
         DataType::Array(_) => ScalarType::Complex,
         DataType::Map(_, _) => ScalarType::Complex,
         DataType::Tuple(_) => ScalarType::Complex,
         DataType::Enum(_) => ScalarType::String,
-        DataType::Nothing => todo!("handle Nothing type"),
+        DataType::Nothing => ScalarType::Complex,
     };
 
-    Ok(scalar_type)
+    scalar_type
 }
 
 #[derive(Debug, PartialEq)]
