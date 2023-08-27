@@ -4,8 +4,11 @@ use tracing::{info_span, Instrument};
 
 use crate::{
     server::{
-        api::{query_request::QueryRequest, query_response::QueryResponse},
-        client::execute_clickhouse_request,
+        api::{
+            error_response::ErrorResponseType, query_request::QueryRequest,
+            query_response::QueryResponse,
+        },
+        client::execute_query,
         config::{SourceConfig, SourceName},
         error::ServerError,
     },
@@ -22,11 +25,19 @@ pub async fn post_query(
     let statement = QueryBuilder::build_sql_statement(&request, false)?;
 
     let statement_string = statement.to_string();
-    let response = execute_clickhouse_request(&config, statement_string)
+
+    let rows: Vec<QueryResponse> = execute_query(&config, &statement_string)
         .instrument(info_span!("execute_query"))
         .await?;
 
-    let response: QueryResponse = serde_json::from_str(&response)?;
+    let response: QueryResponse =
+        rows.first()
+            .cloned()
+            .ok_or_else(|| ServerError::UncaughtError {
+                details: None,
+                message: "The database returned no rows".to_string(),
+                error_type: ErrorResponseType::UncaughtError,
+            })?;
 
     Ok(Json(response))
 }

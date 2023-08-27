@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 
 use crate::server::{
     api::{raw_request::RawRequest, raw_response::RawResponse},
-    client::execute_clickhouse_request,
+    client::execute_query,
     config::{SourceConfig, SourceName},
     error::ServerError,
 };
@@ -19,12 +19,15 @@ pub async fn post_raw(
 ) -> Result<Json<RawResponse>, ServerError> {
     let query = request.query;
 
-    let response = execute_clickhouse_request(&config, query).await?;
+    let query = if query.contains("FORMAT JSON;") {
+        query
+    } else if query.contains(";") {
+        query.replace(";", " FORMAT JSON;")
+    } else {
+        format!("{query} FORMAT JSON;")
+    };
 
-    let response_json = serde_json::Value::from_str(&response)?;
-    let row: IndexMap<String, serde_json::Value> =
-        IndexMap::from_iter((0..1).map(|i| (i.to_string(), response_json.clone())));
-    let rows = vec![row];
+    let rows: Vec<IndexMap<String, serde_json::Value>> = execute_query(&config, &query).await?;
 
     let response = RawResponse { rows };
 

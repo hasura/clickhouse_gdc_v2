@@ -81,11 +81,14 @@ fn single_column_aggregate(
     }
 }
 
-fn foreach_object_type(query: &query_request::Query) -> String {
-    format!(
-        "Tuple(rows Array(Tuple(query {})))",
-        query_object_type(query)
-    )
+fn root_foreach_row_type(query: &query_request::Query) -> String {
+    format!("Array(Tuple(query {}))", query_object_type(query))
+}
+fn root_rows_type(fields: &query_request::Fields) -> String {
+    format!("Array({})", rows_object_type(fields))
+}
+fn root_aggregates_type(aggregates: &query_request::Aggregates) -> String {
+    aggregates_object_type(aggregates)
 }
 
 fn query_object_type(query: &query_request::Query) -> String {
@@ -251,7 +254,7 @@ impl<'a> QueryBuilder<'a> {
         let table = &self.request.table;
         let query = &self.request.query;
 
-        let (root_object_cast_type, root_subquery) = match &self.request.foreach {
+        let root_subquery = match &self.request.foreach {
             Some(foreach) => {
                 // todo: verify that all objects of the foreach collection have the same keys.
                 // fail gracefully if not
@@ -292,38 +295,109 @@ impl<'a> QueryBuilder<'a> {
                 };
                 let foreach_columns: Vec<_> = foreach[0].keys().collect();
 
-                (
-                    foreach_object_type(query),
-                    self.query_subquery(
-                        table,
-                        &vec![],
-                        query,
-                        Some((foreach_table, &foreach_columns)),
-                    )?,
-                )
+                self.query_subquery(
+                    table,
+                    &vec![],
+                    query,
+                    Some((foreach_table, &foreach_columns)),
+                )?
             }
-            None => (
-                query_object_type(query),
-                self.query_subquery(table, &vec![], query, None)?,
-            ),
+            None => self.query_subquery(table, &vec![], query, None)?,
         };
 
         let query_expr =
             Expr::CompoundIdentifier(vec![Ident::quoted("_query"), Ident::quoted("query")]);
 
-        let root_projection = vec![SelectItem::ExprWithAlias {
-            expr: sql_function(
-                "toJSONString",
-                vec![sql_function(
+        let root_projection = if self.request.foreach.is_some() {
+            let cast_typestring = root_foreach_row_type(query);
+            vec![SelectItem::ExprWithAlias {
+                expr: sql_function(
                     "cast",
                     vec![
-                        query_expr,
-                        Expr::Value(Value::SingleQuotedString(root_object_cast_type)),
+                        sql_function(
+                            "tupleElement",
+                            vec![query_expr, Expr::Value(Value::Number("1".to_owned()))],
+                        ),
+                        Expr::Value(Value::SingleQuotedString(cast_typestring)),
                     ],
-                )],
-            ),
-            alias: Ident::quoted("query"),
-        }];
+                ),
+                alias: Ident::quoted("rows"),
+            }]
+        } else {
+            match (&query.fields, &query.aggregates) {
+                (None, None) => vec![SelectItem::UnnamedExpr(Expr::Value(Value::Null))],
+                (None, Some(aggregates)) => {
+                    vec![SelectItem::ExprWithAlias {
+                        expr: sql_function(
+                            "cast",
+                            vec![
+                                sql_function(
+                                    "tupleElement",
+                                    vec![query_expr, Expr::Value(Value::Number("1".to_owned()))],
+                                ),
+                                Expr::Value(Value::SingleQuotedString(root_aggregates_type(
+                                    aggregates,
+                                ))),
+                            ],
+                        ),
+                        alias: Ident::quoted("aggregates"),
+                    }]
+                }
+                (Some(fields), None) => {
+                    vec![SelectItem::ExprWithAlias {
+                        expr: sql_function(
+                            "cast",
+                            vec![
+                                sql_function(
+                                    "tupleElement",
+                                    vec![query_expr, Expr::Value(Value::Number("1".to_owned()))],
+                                ),
+                                Expr::Value(Value::SingleQuotedString(root_rows_type(fields))),
+                            ],
+                        ),
+                        alias: Ident::quoted("rows"),
+                    }]
+                }
+                (Some(fields), Some(aggregates)) => {
+                    vec![
+                        SelectItem::ExprWithAlias {
+                            expr: sql_function(
+                                "cast",
+                                vec![
+                                    sql_function(
+                                        "tupleElement",
+                                        vec![
+                                            query_expr.clone(),
+                                            Expr::Value(Value::Number("1".to_owned())),
+                                        ],
+                                    ),
+                                    Expr::Value(Value::SingleQuotedString(root_rows_type(fields))),
+                                ],
+                            ),
+                            alias: Ident::quoted("rows"),
+                        },
+                        SelectItem::ExprWithAlias {
+                            expr: sql_function(
+                                "cast",
+                                vec![
+                                    sql_function(
+                                        "tupleElement",
+                                        vec![
+                                            query_expr,
+                                            Expr::Value(Value::Number("2".to_owned())),
+                                        ],
+                                    ),
+                                    Expr::Value(Value::SingleQuotedString(root_aggregates_type(
+                                        aggregates,
+                                    ))),
+                                ],
+                            ),
+                            alias: Ident::quoted("aggregates"),
+                        },
+                    ]
+                }
+            }
+        };
 
         let root_from = vec![TableWithJoins {
             relation: TableFactor::Derived {

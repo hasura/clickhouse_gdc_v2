@@ -4,7 +4,7 @@ pub struct Statement(pub Query);
 
 impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{};", self.0)
+        write!(f, "{} FORMAT JSON;", self.0)
     }
 }
 
@@ -459,7 +459,11 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Number(n) => write!(f, "{}", n),
-            Value::SingleQuotedString(s) => write!(f, "'{}'", s),
+            Value::SingleQuotedString(s) => {
+                // docs: https://clickhouse.com/docs/en/sql-reference/syntax#syntax-string-literal
+                let escaped_value = s.to_owned().replace('\\', r#"\\"#).replace('\'', r#"\'"#);
+                write!(f, "'{}'", escaped_value)
+            }
             Value::Boolean(b) => {
                 if *b {
                     write!(f, "TRUE")

@@ -1,11 +1,12 @@
 use axum::Json;
 use axum_extra::extract::WithRejection;
+use serde::{Deserialize, Serialize};
 use tracing::{info_span, Instrument};
 
 use crate::{
     server::{
         api::{explain_response::ExplainResponse, query_request::QueryRequest},
-        client::execute_clickhouse_request,
+        client::execute_query,
         config::{SourceConfig, SourceName},
         error::ServerError,
     },
@@ -23,14 +24,19 @@ pub async fn post_explain(
     let statement_string = statement.to_string();
     let explain_statement = format!("EXPLAIN {}", statement_string);
 
-    let response = execute_clickhouse_request(&config, explain_statement.clone())
+    let query_plan: Vec<ExplainRow> = execute_query(&config, &explain_statement)
         .instrument(info_span!("get_query_plan"))
         .await?;
 
     let response = ExplainResponse {
-        lines: vec![response],
+        lines: query_plan.into_iter().map(|r| r.explain).collect(),
         query: explain_statement,
     };
 
     Ok(Json(response))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ExplainRow {
+    explain: String,
 }

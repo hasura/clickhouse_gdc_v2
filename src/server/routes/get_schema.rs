@@ -10,7 +10,7 @@ use crate::server::{
         query_request::ScalarType,
         schema_response::{ColumnInfo, ColumnType, SchemaResponse, TableInfo, TableType},
     },
-    client::execute_clickhouse_request,
+    client::execute_query,
     config::{SourceConfig, SourceName},
     error::ServerError,
     Config,
@@ -23,11 +23,7 @@ pub async fn get_schema(
 ) -> Result<Json<SchemaResponse>, ServerError> {
     let introspection_sql = include_str!("../database_introspection.sql");
 
-    let response = execute_clickhouse_request(&config, introspection_sql.to_owned())
-        .instrument(info_span!("introspect_database"))
-        .await?;
-
-    let introspection: Vec<TableIntrospection> = serde_json::from_str(&response)?;
+    let introspection: Vec<TableIntrospection> = execute_query(&config, introspection_sql).await?;
 
     let response = SchemaResponse {
         functions: None,
