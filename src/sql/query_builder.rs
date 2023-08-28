@@ -1440,7 +1440,7 @@ impl<'a> QueryBuilder<'a> {
                 )?;
                 let expr = Expr::UnaryOp {
                     op: UnaryOperator::Not,
-                    expr: Box::new(expr),
+                    expr: Box::new(Expr::Nested(Box::new(expr))),
                 };
                 Ok((expr, joins))
             }
