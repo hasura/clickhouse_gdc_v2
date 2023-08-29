@@ -30,5 +30,5 @@ pub enum ScalarType {
     Uuid,
     IPv4,
     IPv6,
-    Complex,
+    Unknown,
 }

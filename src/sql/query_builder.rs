@@ -3,7 +3,7 @@ use std::vec;
 use super::ast::{
     BinaryOperator, Expr, Function, FunctionArgExpr, Ident, Join, JoinConstraint, JoinOperator,
     LimitByExpr, ObjectName, OrderByExpr, Query, SelectItem, Statement, TableFactor,
-    TableWithJoins, UnaryOperator, Value, WindowSpec,
+    TableWithJoins, UnaryOperator, Value,
 };
 use crate::server::{
     api::query_request::{self, ScalarType},
@@ -34,17 +34,18 @@ fn sql_function(name: &str, args: Vec<Expr>) -> Expr {
 // we use the function name to alias aggregate columns when necessary.
 // the name should be reasonable short, and a valid part of a sql identifier when quoted
 fn function_name(function: &query_request::SingleColumnAggregateFunction) -> &'static str {
-    use query_request::SingleColumnAggregateFunction::*;
+    use query_request::SingleColumnAggregateFunction as CA;
     match function {
-        Max => "max",
-        Min => "min",
-        StddevPop => "stddevPop",
-        StddevSamp => "stddevSamp",
-        Sum => "sum",
-        VarPop => "varPop",
-        VarSamp => "varSamp",
-        Longest => "longest",
-        Shortest => "shortest",
+        CA::Avg => "avg",
+        CA::Max => "max",
+        CA::Min => "min",
+        CA::StddevPop => "stddevPop",
+        CA::StddevSamp => "stddevSamp",
+        CA::Sum => "sum",
+        CA::VarPop => "varPop",
+        CA::VarSamp => "varSamp",
+        CA::Longest => "longest",
+        CA::Shortest => "shortest",
     }
 }
 
@@ -67,17 +68,18 @@ fn single_column_aggregate(
     function: &query_request::SingleColumnAggregateFunction,
     column: Expr,
 ) -> Expr {
-    use query_request::SingleColumnAggregateFunction::*;
+    use query_request::SingleColumnAggregateFunction as CA;
     match function {
-        Max => sql_function("max", vec![column]),
-        Min => sql_function("min", vec![column]),
-        StddevPop => sql_function("stddevPop", vec![column]),
-        StddevSamp => sql_function("stddevSamp", vec![column]),
-        Sum => sql_function("sum", vec![column]),
-        VarPop => sql_function("varPop", vec![column]),
-        VarSamp => sql_function("varSamp", vec![column]),
-        Longest => sql_function("max", vec![sql_function("length", vec![column])]),
-        Shortest => sql_function("min", vec![sql_function("length", vec![column])]),
+        CA::Avg => sql_function("avg", vec![column]),
+        CA::Max => sql_function("max", vec![column]),
+        CA::Min => sql_function("min", vec![column]),
+        CA::StddevPop => sql_function("stddevPop", vec![column]),
+        CA::StddevSamp => sql_function("stddevSamp", vec![column]),
+        CA::Sum => sql_function("sum", vec![column]),
+        CA::VarPop => sql_function("varPop", vec![column]),
+        CA::VarSamp => sql_function("varSamp", vec![column]),
+        CA::Longest => sql_function("max", vec![sql_function("length", vec![column])]),
+        CA::Shortest => sql_function("min", vec![sql_function("length", vec![column])]),
     }
 }
 
@@ -162,38 +164,38 @@ fn aggregates_object_type(aggregates: &query_request::Aggregates) -> String {
 /// used when casting rows to named tuples, which is later used to cast to JSON
 /// we always wrap the type name in Nullable() as we don't know if the underlying column is nulable or not
 fn type_cast_string(scalar_type: &query_request::ScalarType) -> String {
-    use query_request::ScalarType::*;
+    use query_request::ScalarType as ST;
     match scalar_type {
-        Bool => "Nullable(Bool)",
-        String => "Nullable(String)",
-        FixedString => "Nullable(FixedString)",
-        UInt8 => "Nullable(UInt8)",
-        UInt16 => "Nullable(UInt16)",
-        UInt32 => "Nullable(UInt32)",
-        UInt64 => "Nullable(UInt64)",
-        UInt128 => "Nullable(UInt128)",
-        UInt256 => "Nullable(UInt256)",
-        Int8 => "Nullable(Int8)",
-        Int16 => "Nullable(Int16)",
-        Int32 => "Nullable(Int32)",
-        Int64 => "Nullable(Int64)",
-        Int128 => "Nullable(Int128)",
-        Int256 => "Nullable(Int256)",
-        Float32 => "Nullable(Float32)",
-        Float64 => "Nullable(Float64)",
+        ST::Bool => "Nullable(Bool)",
+        ST::String => "Nullable(String)",
+        ST::FixedString => "Nullable(FixedString)",
+        ST::UInt8 => "Nullable(UInt8)",
+        ST::UInt16 => "Nullable(UInt16)",
+        ST::UInt32 => "Nullable(UInt32)",
+        ST::UInt64 => "Nullable(UInt64)",
+        ST::UInt128 => "Nullable(UInt128)",
+        ST::UInt256 => "Nullable(UInt256)",
+        ST::Int8 => "Nullable(Int8)",
+        ST::Int16 => "Nullable(Int16)",
+        ST::Int32 => "Nullable(Int32)",
+        ST::Int64 => "Nullable(Int64)",
+        ST::Int128 => "Nullable(Int128)",
+        ST::Int256 => "Nullable(Int256)",
+        ST::Float32 => "Nullable(Float32)",
+        ST::Float64 => "Nullable(Float64)",
         // casting decimal to string. Not sure if this is correct.
         // cannot cast to decimal without making a call on precision and scale
         // could go for max precision, but impossible to know scale
-        Decimal => "Nullable(String)",
-        Date => "Nullable(Date)",
-        Date32 => "Nullable(Date32)",
-        DateTime => "Nullable(DateTime)",
-        DateTime64 => "Nullable(DateTime64(9))",
-        Json => "Nullable(JSON)",
-        Uuid => "Nullable(UUID)",
-        IPv4 => "Nullable(IPv4)",
-        IPv6 => "Nullable(IPv6)",
-        Complex => "Nullable(String)",
+        ST::Decimal => "Nullable(String)",
+        ST::Date => "Nullable(Date)",
+        ST::Date32 => "Nullable(Date32)",
+        ST::DateTime => "Nullable(DateTime)",
+        ST::DateTime64 => "Nullable(DateTime64(9))",
+        ST::Json => "Nullable(JSON)",
+        ST::Uuid => "Nullable(UUID)",
+        ST::IPv4 => "Nullable(IPv4)",
+        ST::IPv6 => "Nullable(IPv6)",
+        ST::Unknown => "Nullable(String)",
     }
     .to_owned()
 }
@@ -712,7 +714,7 @@ impl<'a> QueryBuilder<'a> {
                     Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(column)]);
 
                 let expr = match column_type {
-                    ScalarType::Complex => sql_function("toJSONString", vec![identifier]),
+                    ScalarType::Unknown => sql_function("toJSONString", vec![identifier]),
                     _ => identifier,
                 };
                 SelectItem::ExprWithAlias {

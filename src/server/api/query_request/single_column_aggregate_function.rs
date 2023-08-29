@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum SingleColumnAggregateFunction {
     Max,
     Min,
+    Avg,
     StddevPop,
     StddevSamp,
     Sum,
