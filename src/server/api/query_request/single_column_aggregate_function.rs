@@ -13,4 +13,8 @@ pub enum SingleColumnAggregateFunction {
     VarSamp,
     Longest,
     Shortest,
+    AvgMerge,
+    SumMerge,
+    MinMerge,
+    MaxMerge,
 }

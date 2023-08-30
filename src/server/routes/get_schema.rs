@@ -1,19 +1,18 @@
-use std::{error::Error, str::FromStr};
+use std::str::FromStr;
 
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use tracing::{info_span, Instrument};
 mod clickhouse_data_type;
 
 use crate::server::{
     api::{
-        error_response::ErrorResponseType,
         query_request::ScalarType,
         schema_response::{ColumnInfo, ColumnType, SchemaResponse, TableInfo, TableType},
     },
     client::execute_query,
     config::{SourceConfig, SourceName},
     error::ServerError,
+    routes::get_schema::clickhouse_data_type::Identifier,
     Config,
 };
 
@@ -176,17 +175,134 @@ fn get_scalar_type(data_type: &ClickhouseDataType) -> ScalarType {
         CDT::Enum(_) => ScalarType::String,
         CDT::Nothing => ScalarType::Unknown,
         CDT::SimpleAggregateFunction {
-            function,
-            arguments,
-        }
-        | CDT::AggregateFunction {
-            function,
+            function: _,
             arguments,
         } => {
+            // simple aggregates are stored in the same format as their first input type
             if let Some(data_type) = arguments.first() {
                 get_scalar_type(data_type)
             } else {
                 ScalarType::Unknown
+            }
+        }
+        CDT::AggregateFunction {
+            function,
+            arguments,
+        } => {
+            let function_name = match &function.name {
+                Identifier::DoubleQuoted(n) => n,
+                Identifier::BacktickQuoted(n) => n,
+                Identifier::Unquoted(n) => n,
+            }
+            .as_str();
+
+            match (function_name, arguments.first()) {
+                ("avg", Some(CDT::UInt8)) => ScalarType::AvgUInt8,
+                ("avg", Some(CDT::UInt16)) => ScalarType::AvgUInt16,
+                ("avg", Some(CDT::UInt32)) => ScalarType::AvgUInt32,
+                ("avg", Some(CDT::UInt64)) => ScalarType::AvgUInt64,
+                ("avg", Some(CDT::UInt128)) => ScalarType::AvgUInt128,
+                ("avg", Some(CDT::UInt256)) => ScalarType::AvgUInt256,
+                ("avg", Some(CDT::Int8)) => ScalarType::AvgInt8,
+                ("avg", Some(CDT::Int16)) => ScalarType::AvgInt16,
+                ("avg", Some(CDT::Int32)) => ScalarType::AvgInt32,
+                ("avg", Some(CDT::Int64)) => ScalarType::AvgInt64,
+                ("avg", Some(CDT::Int128)) => ScalarType::AvgInt128,
+                ("avg", Some(CDT::Int256)) => ScalarType::AvgInt256,
+                ("avg", Some(CDT::Float32)) => ScalarType::AvgFloat32,
+                ("avg", Some(CDT::Float64)) => ScalarType::AvgFloat64,
+                (
+                    "avg",
+                    Some(
+                        CDT::Decimal { .. }
+                        | CDT::Decimal32 { .. }
+                        | CDT::Decimal64 { .. }
+                        | CDT::Decimal128 { .. }
+                        | CDT::Decimal256 { .. },
+                    ),
+                ) => ScalarType::AvgDecimal,
+                ("sum", Some(CDT::UInt8)) => ScalarType::SumUInt8,
+                ("sum", Some(CDT::UInt16)) => ScalarType::SumUInt16,
+                ("sum", Some(CDT::UInt32)) => ScalarType::SumUInt32,
+                ("sum", Some(CDT::UInt64)) => ScalarType::SumUInt64,
+                ("sum", Some(CDT::UInt128)) => ScalarType::SumUInt128,
+                ("sum", Some(CDT::UInt256)) => ScalarType::SumUInt256,
+                ("sum", Some(CDT::Int8)) => ScalarType::SumInt8,
+                ("sum", Some(CDT::Int16)) => ScalarType::SumInt16,
+                ("sum", Some(CDT::Int32)) => ScalarType::SumInt32,
+                ("sum", Some(CDT::Int64)) => ScalarType::SumInt64,
+                ("sum", Some(CDT::Int128)) => ScalarType::SumInt128,
+                ("sum", Some(CDT::Int256)) => ScalarType::SumInt256,
+                ("sum", Some(CDT::Float32)) => ScalarType::SumFloat32,
+                ("sum", Some(CDT::Float64)) => ScalarType::SumFloat64,
+                (
+                    "sum",
+                    Some(
+                        CDT::Decimal { .. }
+                        | CDT::Decimal32 { .. }
+                        | CDT::Decimal64 { .. }
+                        | CDT::Decimal128 { .. }
+                        | CDT::Decimal256 { .. },
+                    ),
+                ) => ScalarType::SumDecimal,
+                ("max", Some(CDT::UInt8)) => ScalarType::MaxUInt8,
+                ("max", Some(CDT::UInt16)) => ScalarType::MaxUInt16,
+                ("max", Some(CDT::UInt32)) => ScalarType::MaxUInt32,
+                ("max", Some(CDT::UInt64)) => ScalarType::MaxUInt64,
+                ("max", Some(CDT::UInt128)) => ScalarType::MaxUInt128,
+                ("max", Some(CDT::UInt256)) => ScalarType::MaxUInt256,
+                ("max", Some(CDT::Int8)) => ScalarType::MaxInt8,
+                ("max", Some(CDT::Int16)) => ScalarType::MaxInt16,
+                ("max", Some(CDT::Int32)) => ScalarType::MaxInt32,
+                ("max", Some(CDT::Int64)) => ScalarType::MaxInt64,
+                ("max", Some(CDT::Int128)) => ScalarType::MaxInt128,
+                ("max", Some(CDT::Int256)) => ScalarType::MaxInt256,
+                ("max", Some(CDT::Float32)) => ScalarType::MaxFloat32,
+                ("max", Some(CDT::Float64)) => ScalarType::MaxFloat64,
+                (
+                    "max",
+                    Some(
+                        CDT::Decimal { .. }
+                        | CDT::Decimal32 { .. }
+                        | CDT::Decimal64 { .. }
+                        | CDT::Decimal128 { .. }
+                        | CDT::Decimal256 { .. },
+                    ),
+                ) => ScalarType::MaxDecimal,
+                ("min", Some(CDT::UInt8)) => ScalarType::MinUInt8,
+                ("min", Some(CDT::UInt16)) => ScalarType::MinUInt16,
+                ("min", Some(CDT::UInt32)) => ScalarType::MinUInt32,
+                ("min", Some(CDT::UInt64)) => ScalarType::MinUInt64,
+                ("min", Some(CDT::UInt128)) => ScalarType::MinUInt128,
+                ("min", Some(CDT::UInt256)) => ScalarType::MinUInt256,
+                ("min", Some(CDT::Int8)) => ScalarType::MinInt8,
+                ("min", Some(CDT::Int16)) => ScalarType::MinInt16,
+                ("min", Some(CDT::Int32)) => ScalarType::MinInt32,
+                ("min", Some(CDT::Int64)) => ScalarType::MinInt64,
+                ("min", Some(CDT::Int128)) => ScalarType::MinInt128,
+                ("min", Some(CDT::Int256)) => ScalarType::MinInt256,
+                ("min", Some(CDT::Float32)) => ScalarType::MinFloat32,
+                ("min", Some(CDT::Float64)) => ScalarType::MinFloat64,
+                (
+                    "min",
+                    Some(
+                        CDT::Decimal { .. }
+                        | CDT::Decimal32 { .. }
+                        | CDT::Decimal64 { .. }
+                        | CDT::Decimal128 { .. }
+                        | CDT::Decimal256 { .. },
+                    ),
+                ) => ScalarType::MinDecimal,
+                ("max", Some(CDT::Date)) => ScalarType::MaxDate,
+                ("max", Some(CDT::Date32)) => ScalarType::MaxDate32,
+                ("max", Some(CDT::DateTime { .. })) => ScalarType::MaxDateTime,
+                ("max", Some(CDT::DateTime64 { .. })) => ScalarType::MaxDateTime64,
+                ("min", Some(CDT::Date)) => ScalarType::MinDate,
+                ("min", Some(CDT::Date32)) => ScalarType::MinDate32,
+                ("min", Some(CDT::DateTime { .. })) => ScalarType::MinDateTime,
+                ("min", Some(CDT::DateTime64 { .. })) => ScalarType::MinDateTime64,
+
+                _ => ScalarType::Unknown,
             }
         }
     };

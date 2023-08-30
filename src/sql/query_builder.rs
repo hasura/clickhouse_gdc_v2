@@ -5,10 +5,7 @@ use super::ast::{
     LimitByExpr, ObjectName, OrderByExpr, Query, SelectItem, Statement, TableFactor,
     TableWithJoins, UnaryOperator, Value,
 };
-use crate::server::{
-    api::query_request::{self, ScalarType},
-    Config,
-};
+use crate::server::api::query_request::{self, BinaryComparisonOperator, ScalarType};
 use indexmap::IndexMap;
 pub mod aliasing;
 mod error;
@@ -46,6 +43,10 @@ fn function_name(function: &query_request::SingleColumnAggregateFunction) -> &'s
         CA::VarSamp => "varSamp",
         CA::Longest => "longest",
         CA::Shortest => "shortest",
+        CA::AvgMerge => "avgMerge",
+        CA::SumMerge => "sumMerge",
+        CA::MinMerge => "minMerge",
+        CA::MaxMerge => "maxMerge",
     }
 }
 
@@ -80,6 +81,10 @@ fn single_column_aggregate(
         CA::VarSamp => sql_function("varSamp", vec![column]),
         CA::Longest => sql_function("max", vec![sql_function("length", vec![column])]),
         CA::Shortest => sql_function("min", vec![sql_function("length", vec![column])]),
+        CA::AvgMerge => sql_function("avgMerge", vec![column]),
+        CA::SumMerge => sql_function("sumMerge", vec![column]),
+        CA::MinMerge => sql_function("minMerge", vec![column]),
+        CA::MaxMerge => sql_function("maxMerge", vec![column]),
     }
 }
 
@@ -196,6 +201,75 @@ fn type_cast_string(scalar_type: &query_request::ScalarType) -> String {
         ST::IPv4 => "Nullable(IPv4)",
         ST::IPv6 => "Nullable(IPv6)",
         ST::Unknown => "Nullable(String)",
+        // AggregateFunction types are not really meant to be looked at directly, casting to string for now
+        ST::AvgUInt8 => "Nullable(String)",
+        ST::AvgUInt16 => "Nullable(String)",
+        ST::AvgUInt32 => "Nullable(String)",
+        ST::AvgUInt64 => "Nullable(String)",
+        ST::AvgUInt128 => "Nullable(String)",
+        ST::AvgUInt256 => "Nullable(String)",
+        ST::AvgInt8 => "Nullable(String)",
+        ST::AvgInt16 => "Nullable(String)",
+        ST::AvgInt32 => "Nullable(String)",
+        ST::AvgInt64 => "Nullable(String)",
+        ST::AvgInt128 => "Nullable(String)",
+        ST::AvgInt256 => "Nullable(String)",
+        ST::AvgFloat32 => "Nullable(String)",
+        ST::AvgFloat64 => "Nullable(String)",
+        ST::AvgDecimal => "Nullable(String)",
+        ST::SumUInt8 => "Nullable(String)",
+        ST::SumUInt16 => "Nullable(String)",
+        ST::SumUInt32 => "Nullable(String)",
+        ST::SumUInt64 => "Nullable(String)",
+        ST::SumUInt128 => "Nullable(String)",
+        ST::SumUInt256 => "Nullable(String)",
+        ST::SumInt8 => "Nullable(String)",
+        ST::SumInt16 => "Nullable(String)",
+        ST::SumInt32 => "Nullable(String)",
+        ST::SumInt64 => "Nullable(String)",
+        ST::SumInt128 => "Nullable(String)",
+        ST::SumInt256 => "Nullable(String)",
+        ST::SumFloat32 => "Nullable(String)",
+        ST::SumFloat64 => "Nullable(String)",
+        ST::SumDecimal => "Nullable(String)",
+        ST::MaxUInt8 => "Nullable(String)",
+        ST::MaxUInt16 => "Nullable(String)",
+        ST::MaxUInt32 => "Nullable(String)",
+        ST::MaxUInt64 => "Nullable(String)",
+        ST::MaxUInt128 => "Nullable(String)",
+        ST::MaxUInt256 => "Nullable(String)",
+        ST::MaxInt8 => "Nullable(String)",
+        ST::MaxInt16 => "Nullable(String)",
+        ST::MaxInt32 => "Nullable(String)",
+        ST::MaxInt64 => "Nullable(String)",
+        ST::MaxInt128 => "Nullable(String)",
+        ST::MaxInt256 => "Nullable(String)",
+        ST::MaxFloat32 => "Nullable(String)",
+        ST::MaxFloat64 => "Nullable(String)",
+        ST::MaxDecimal => "Nullable(String)",
+        ST::MinUInt8 => "Nullable(String)",
+        ST::MinUInt16 => "Nullable(String)",
+        ST::MinUInt32 => "Nullable(String)",
+        ST::MinUInt64 => "Nullable(String)",
+        ST::MinUInt128 => "Nullable(String)",
+        ST::MinUInt256 => "Nullable(String)",
+        ST::MinInt8 => "Nullable(String)",
+        ST::MinInt16 => "Nullable(String)",
+        ST::MinInt32 => "Nullable(String)",
+        ST::MinInt64 => "Nullable(String)",
+        ST::MinInt128 => "Nullable(String)",
+        ST::MinInt256 => "Nullable(String)",
+        ST::MinFloat32 => "Nullable(String)",
+        ST::MinFloat64 => "Nullable(String)",
+        ST::MinDecimal => "Nullable(String)",
+        ST::MaxDate => "Nullable(String)",
+        ST::MaxDate32 => "Nullable(String)",
+        ST::MaxDateTime => "Nullable(String)",
+        ST::MaxDateTime64 => "Nullable(String)",
+        ST::MinDate => "Nullable(String)",
+        ST::MinDate32 => "Nullable(String)",
+        ST::MinDateTime => "Nullable(String)",
+        ST::MinDateTime64 => "Nullable(String)",
     }
     .to_owned()
 }
@@ -1137,19 +1211,98 @@ impl<'a> QueryBuilder<'a> {
             ),
             // sort on default value for aggregates
             query_request::OrderByTarget::SingleColumnAggregate { result_type, .. } => {
-                use query_request::ScalarType::*;
+                use query_request::ScalarType as ST;
                 let default_sorting_value = match result_type {
-                    Bool => Value::Null,
-                    String | FixedString => Value::SingleQuotedString("".to_owned()),
-                    UInt8 | UInt16 | UInt32 | UInt64 | UInt128 | UInt256 | Int8 | Int16 | Int32
-                    | Int64 | Int128 | Int256 | Float32 | Float64 | Decimal => {
-                        Value::Number("0".to_owned())
-                    }
-                    Date | Date32 | DateTime | DateTime64 => Value::Null,
-                    Json => Value::Null,
-                    Uuid => Value::Null,
-                    IPv4 | IPv6 => Value::Null,
-                    Complex => Value::Null,
+                    ST::Bool => Value::Null,
+                    ST::String | ST::FixedString => Value::SingleQuotedString("".to_owned()),
+                    ST::UInt8
+                    | ST::UInt16
+                    | ST::UInt32
+                    | ST::UInt64
+                    | ST::UInt128
+                    | ST::UInt256
+                    | ST::Int8
+                    | ST::Int16
+                    | ST::Int32
+                    | ST::Int64
+                    | ST::Int128
+                    | ST::Int256
+                    | ST::Float32
+                    | ST::Float64
+                    | ST::Decimal => Value::Number("0".to_owned()),
+                    ST::Date | ST::Date32 | ST::DateTime | ST::DateTime64 => Value::Null,
+                    ST::Json => Value::Null,
+                    ST::Uuid => Value::Null,
+                    ST::IPv4 | ST::IPv6 => Value::Null,
+                    ST::Unknown => Value::Null,
+                    ST::AvgUInt8
+                    | ST::AvgUInt16
+                    | ST::AvgUInt32
+                    | ST::AvgUInt64
+                    | ST::AvgUInt128
+                    | ST::AvgUInt256
+                    | ST::AvgInt8
+                    | ST::AvgInt16
+                    | ST::AvgInt32
+                    | ST::AvgInt64
+                    | ST::AvgInt128
+                    | ST::AvgInt256
+                    | ST::AvgFloat32
+                    | ST::AvgFloat64
+                    | ST::AvgDecimal
+                    | ST::SumUInt8
+                    | ST::SumUInt16
+                    | ST::SumUInt32
+                    | ST::SumUInt64
+                    | ST::SumUInt128
+                    | ST::SumUInt256
+                    | ST::SumInt8
+                    | ST::SumInt16
+                    | ST::SumInt32
+                    | ST::SumInt64
+                    | ST::SumInt128
+                    | ST::SumInt256
+                    | ST::SumFloat32
+                    | ST::SumFloat64
+                    | ST::SumDecimal
+                    | ST::MaxUInt8
+                    | ST::MaxUInt16
+                    | ST::MaxUInt32
+                    | ST::MaxUInt64
+                    | ST::MaxUInt128
+                    | ST::MaxUInt256
+                    | ST::MaxInt8
+                    | ST::MaxInt16
+                    | ST::MaxInt32
+                    | ST::MaxInt64
+                    | ST::MaxInt128
+                    | ST::MaxInt256
+                    | ST::MaxFloat32
+                    | ST::MaxFloat64
+                    | ST::MaxDecimal
+                    | ST::MinUInt8
+                    | ST::MinUInt16
+                    | ST::MinUInt32
+                    | ST::MinUInt64
+                    | ST::MinUInt128
+                    | ST::MinUInt256
+                    | ST::MinInt8
+                    | ST::MinInt16
+                    | ST::MinInt32
+                    | ST::MinInt64
+                    | ST::MinInt128
+                    | ST::MinInt256
+                    | ST::MinFloat32
+                    | ST::MinFloat64
+                    | ST::MinDecimal
+                    | ST::MaxDate
+                    | ST::MaxDate32
+                    | ST::MaxDateTime
+                    | ST::MaxDateTime64
+                    | ST::MinDate
+                    | ST::MinDate32
+                    | ST::MinDateTime
+                    | ST::MinDateTime64 => Value::Null,
                 };
                 sql_function("COALESCE", vec![column, Expr::Value(default_sorting_value)])
             }
@@ -1476,16 +1629,15 @@ impl<'a> QueryBuilder<'a> {
                     }
                 };
 
-                use query_request::BinaryComparisonOperator::*;
                 let expr = Expr::BinaryOp {
                     left,
                     right,
                     op: match operator {
-                        LessThan => BinaryOperator::Lt,
-                        LessThanOrEqual => BinaryOperator::LtEq,
-                        Equal => BinaryOperator::Eq,
-                        GreaterThan => BinaryOperator::Gt,
-                        GreaterThanOrEqual => BinaryOperator::GtEq,
+                        BinaryComparisonOperator::LessThan => BinaryOperator::Lt,
+                        BinaryComparisonOperator::LessThanOrEqual => BinaryOperator::LtEq,
+                        BinaryComparisonOperator::Equal => BinaryOperator::Eq,
+                        BinaryComparisonOperator::GreaterThan => BinaryOperator::Gt,
+                        BinaryComparisonOperator::GreaterThanOrEqual => BinaryOperator::GtEq,
                     },
                 };
 
