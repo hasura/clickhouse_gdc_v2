@@ -1,19 +1,11 @@
-use std::{error::Error, mem};
-
 use indexmap::IndexMap;
 
-use crate::{
-    server::{
-        api::{
-            query_request::{
-                Aggregate, ComparisonValue, ExistsInTable, Expression, Field, OrderByRelation,
-                OrderByTarget, Query, QueryRequest, Relationship, TableName, TableRelationships,
-            },
-            schema_response::SchemaResponse,
-        },
-        Config,
+use crate::server::{
+    api::query_request::{
+        Aggregate, ComparisonValue, ExistsInTable, Expression, Field, OrderByRelation,
+        OrderByTarget, Query, QueryRequest, Relationship, TableName, TableRelationships, Target,
     },
-    sql::ast::{Ident, ObjectName},
+    Config,
 };
 
 use super::QueryBuilderError;
@@ -22,40 +14,83 @@ pub fn apply_aliases_to_query_request(
     mut request: QueryRequest,
     config: &Config,
 ) -> Result<QueryRequest, QueryBuilderError> {
-    request.table = aliased_table_name(&request.table, config)?;
+    let (foreach, query, request_table, table_relationships) = match request {
+        QueryRequest::Table {
+            ref mut foreach,
+            ref mut query,
+            ref mut table,
+            ref mut table_relationships,
+        } => (foreach, query, table, table_relationships),
+        QueryRequest::Target {
+            ref mut foreach,
+            ref mut query,
+            ref mut target,
+            ref mut table_relationships,
+        } => match target {
+            Target::Table { ref mut name } => (foreach, query, name, table_relationships),
+            Target::Interpolated { .. } => {
+                return Err(QueryBuilderError::Internal(
+                    "Interpolated targets not supported".to_string(),
+                ))
+            }
+            Target::Function { .. } => {
+                return Err(QueryBuilderError::Internal(
+                    "Function targets not supported".to_string(),
+                ))
+            }
+        },
+    };
+    *request_table = aliased_table_name(request_table, config)?;
 
-    for table_relationships in request.table_relationships.iter_mut() {
+    for table_relationships in table_relationships.iter_mut() {
         table_relationships.source_table =
             aliased_table_name(&table_relationships.source_table, config)?;
 
         for relationship in table_relationships.relationships.values_mut() {
-            relationship.target_table = aliased_table_name(&relationship.target_table, config)?;
+            let (target_table, column_mapping) = match relationship {
+                Relationship::Table {
+                    ref mut column_mapping,
+                    relationship_type: _,
+                    ref mut target_table,
+                } => (target_table, column_mapping),
+                Relationship::Target {
+                    ref mut column_mapping,
+                    relationship_type: _,
+                    ref mut target,
+                } => match target {
+                    Target::Table { ref mut name } => (name, column_mapping),
+                    Target::Interpolated { .. } => {
+                        return Err(QueryBuilderError::Internal(
+                            "Interpolated targets not supported".to_string(),
+                        ))
+                    }
+                    Target::Function { .. } => {
+                        return Err(QueryBuilderError::Internal(
+                            "Function targets not supported".to_string(),
+                        ))
+                    }
+                },
+            };
+            *target_table = aliased_table_name(target_table, config)?;
 
-            for (source_col, target_col) in
-                relationship.column_mapping.drain(..).collect::<Vec<_>>()
-            {
-                relationship.column_mapping.insert(
+            for (source_col, target_col) in column_mapping.drain(..).collect::<Vec<_>>() {
+                column_mapping.insert(
                     aliased_column_name(&table_relationships.source_table, &source_col, config)?,
-                    aliased_column_name(&relationship.target_table, &target_col, config)?,
+                    aliased_column_name(target_table, &target_col, config)?,
                 );
             }
         }
     }
 
-    if let Some(foreach) = request.foreach.as_mut() {
+    if let Some(foreach) = foreach.as_mut() {
         for row in foreach.iter_mut() {
             for (column, value) in row.drain(..).collect::<Vec<_>>() {
-                row.insert(aliased_column_name(&request.table, &column, config)?, value);
+                row.insert(aliased_column_name(request_table, &column, config)?, value);
             }
         }
     }
 
-    apply_aliases_to_query(
-        &request.table,
-        &mut request.query,
-        &request.table_relationships,
-        config,
-    )?;
+    apply_aliases_to_query(request_table, query, table_relationships, config)?;
 
     Ok(request)
 }
@@ -91,7 +126,7 @@ fn apply_aliases_to_query(
                     relationship,
                 } => {
                     let table =
-                        &table_relationship(table, relationship, table_relationships)?.target_table;
+                        &relationship_target_table(table, relationship, table_relationships)?;
                     apply_aliases_to_query(table, query, table_relationships, config)?;
                 }
             }
@@ -108,7 +143,7 @@ fn apply_aliases_to_query(
                 .target_path
                 .iter()
                 .try_fold(table, |table, relationship| {
-                    Ok(&table_relationship(table, relationship, table_relationships)?.target_table)
+                    relationship_target_table(table, relationship, table_relationships)
                 })?;
             match &mut element.target {
                 OrderByTarget::StarCountAggregate => {}
@@ -139,8 +174,7 @@ fn apply_aliases_to_order_by_relations(
     config: &Config,
 ) -> Result<(), QueryBuilderError> {
     for (relationship_name, relation) in relations.iter_mut() {
-        let table =
-            &table_relationship(table, relationship_name, table_relationships)?.target_table;
+        let table = &relationship_target_table(table, relationship_name, table_relationships)?;
 
         if let Some(expression) = relation.selection.as_mut() {
             apply_aliases_to_expression(table, expression, table_relationships, config)?;
@@ -194,9 +228,9 @@ fn apply_aliases_to_expression(
         }
         Expression::BinaryArrayComparisonOperator {
             column,
-            operator,
-            value_type,
-            values,
+            operator: _,
+            value_type: _,
+            values: _,
         } => {
             // todo: consider column path. note we don't support this anyways so, perhaps don't bother?
             column.name = aliased_column_name(table, &column.name, config)?;
@@ -208,7 +242,7 @@ fn apply_aliases_to_expression(
             let table = match in_table {
                 ExistsInTable::UnrelatedTable { table } => table,
                 ExistsInTable::RelatedTable { relationship } => {
-                    &table_relationship(table, relationship, table_relationships)?.target_table
+                    relationship_target_table(table, relationship, table_relationships)?
                 }
             };
 
@@ -219,11 +253,11 @@ fn apply_aliases_to_expression(
     Ok(())
 }
 
-fn table_relationship<'a>(
+fn relationship_target_table<'a>(
     table: &TableName,
     relationship_name: &str,
     table_relationships: &'a [TableRelationships],
-) -> Result<&'a Relationship, QueryBuilderError> {
+) -> Result<&'a TableName, QueryBuilderError> {
     let source_table = table_relationships
         .iter()
         .find(|table_relationships| table_relationships.source_table == *table)
@@ -239,7 +273,32 @@ fn table_relationship<'a>(
             )
         })?;
 
-    Ok(relationship)
+    let table_name = match relationship {
+        Relationship::Table {
+            column_mapping: _,
+            relationship_type: _,
+            target_table,
+        } => target_table,
+        Relationship::Target {
+            column_mapping: _,
+            relationship_type: _,
+            target,
+        } => match target {
+            Target::Table { name } => name,
+            Target::Interpolated { id: _ } => {
+                return Err(QueryBuilderError::Internal(
+                    "Interpolated targets not supported".to_string(),
+                ))
+            }
+            Target::Function { function: _ } => {
+                return Err(QueryBuilderError::Internal(
+                    "Function targets not supported".to_string(),
+                ))
+            }
+        },
+    };
+
+    Ok(table_name)
 }
 
 fn aliased_table_name(table: &TableName, config: &Config) -> Result<TableName, QueryBuilderError> {

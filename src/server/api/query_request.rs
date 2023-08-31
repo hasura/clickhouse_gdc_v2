@@ -24,21 +24,46 @@ pub type ColumnMapping = IndexMap<String, String>;
 
 #[skip_serializing_none]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct QueryRequest {
-    /// If present, a list of columns and values for the columns that the query must be repeated for, applying the column values as a filter for each query.
-    pub foreach: Option<Vec<ForEach>>,
-    pub query: Query,
-    pub table: TableName,
-    /// The relationships between tables involved in the entire query request
-    pub table_relationships: Vec<TableRelationships>,
+#[serde(untagged)]
+pub enum QueryRequest {
+    Table {
+        /// If present, a list of columns and values for the columns that the query must be repeated for, applying the column values as a filter for each query.
+        foreach: Option<Vec<ForEach>>,
+        query: Query,
+        table: TableName,
+        /// The relationships between tables involved in the entire query request
+        table_relationships: Vec<TableRelationships>,
+    },
+    Target {
+        /// If present, a list of columns and values for the columns that the query must be repeated for, applying the column values as a filter for each query.
+        foreach: Option<Vec<ForEach>>,
+        query: Query,
+        target: Target,
+        /// The relationships between tables involved in the entire query request
+        table_relationships: Vec<TableRelationships>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Target {
+    Table {
+        /// The fully qualified name of a table, where the last item in the array is the table name and any earlier items represent the namespacing of the table name
+        name: TableName,
+    },
+    Interpolated {
+        id: String,
+    },
+    Function {
+        function: Vec<String>,
+    },
 }
 
 pub type ForEach = IndexMap<String, ForEachValue>;
 
 #[skip_serializing_none]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
+
 pub struct Query {
     /// Aggregate fields of the query
     pub aggregates: Option<Aggregates>,
@@ -60,7 +85,7 @@ pub type Aggregates = IndexMap<String, Aggregate>;
 pub type Fields = IndexMap<String, Field>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
+
 pub struct ForEachValue {
     pub value: ScalarValue,
     pub value_type: ScalarType,
@@ -74,11 +99,24 @@ pub struct TableRelationships {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Relationship {
-    // A mapping between columns on the source table to columns on the target table
-    pub column_mapping: ColumnMapping,
-    pub relationship_type: RelationshipType,
-    pub target_table: TableName,
+#[serde(untagged)]
+pub enum Relationship {
+    Table {
+        /// A mapping between columns on the source table to columns on the target table
+        column_mapping: ColumnMapping,
+        relationship_type: RelationshipType,
+        /// The target of the relationship.
+        /// For backwards compatibility with previous versions of dc-api we allow the alternative property name "target_table" and allow table names to be parsed into Target::TTable
+        target_table: TableName,
+    },
+    Target {
+        /// A mapping between columns on the source table to columns on the target table
+        column_mapping: ColumnMapping,
+        relationship_type: RelationshipType,
+        /// The target of the relationship.
+        /// For backwards compatibility with previous versions of dc-api we allow the alternative property name "target_table" and allow table names to be parsed into Target::TTable
+        target: Target,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -89,7 +127,7 @@ pub enum RelationshipType {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
+
 pub struct OrderBy {
     ///The elements to order by, in priority order
     pub elements: Vec<OrderByElement>,
@@ -98,7 +136,7 @@ pub struct OrderBy {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
+
 pub struct OrderByElement {
     pub order_direction: OrderDirection,
     pub target: OrderByTarget,
@@ -114,7 +152,6 @@ pub enum OrderDirection {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
 #[serde(tag = "type")]
 pub enum OrderByTarget {
     #[serde(rename = "star_count_aggregate")]
@@ -131,7 +168,6 @@ pub enum OrderByTarget {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
 pub struct OrderByRelation {
     /// Further relationships to follow from the relationship's target table. The key of the map is the relationship name.
     pub subrelations: IndexMap<String, OrderByRelation>,
@@ -140,7 +176,6 @@ pub struct OrderByRelation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
 #[serde(tag = "type")]
 pub enum Expression {
     #[serde(rename = "exists")]
@@ -185,7 +220,6 @@ pub enum ExistsInTable {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
 #[serde(tag = "type")]
 pub enum ComparisonValue {
     #[serde(rename = "scalar")]
@@ -198,7 +232,7 @@ pub enum ComparisonValue {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
+
 pub struct ComparisonColumn {
     pub column_type: ScalarType,
     /// The name of the column
@@ -208,7 +242,6 @@ pub struct ComparisonColumn {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
 #[serde(tag = "type")]
 pub enum Field {
     #[serde(rename = "relationship")]
@@ -221,7 +254,6 @@ pub enum Field {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
 #[serde(tag = "type")]
 pub enum Aggregate {
     #[serde(rename = "column_count")]

@@ -13,10 +13,8 @@ Please report any bugs by filing issues in this repo.
 ### Known issues & limitations
 
 - Column comparison operators are not supported, but Hasura GraphQL Engine will still allow them, resulting in runtime errors.
-- We are using the clickhouse http interface. We will move to a tcp client in due time.
 - No support for mutations or subscriptions.
 - Table columns with complex types are supported as JSON strings, not full graphql types.
-- There is a currently a bug where the console UI will demand at least one entry for the tables array, and one entry for that table's columns. This should soon be fixed. For the time being, you may work around this by providing dummy values for both table an column names and aliases.
 
 ## Using this connector
 

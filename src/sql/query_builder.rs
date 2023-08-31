@@ -274,15 +274,62 @@ fn type_cast_string(scalar_type: &query_request::ScalarType) -> String {
     .to_owned()
 }
 
-pub struct QueryBuilder<'a> {
-    request: &'a query_request::QueryRequest,
+pub struct QueryBuilder<'request> {
+    request: &'request query_request::QueryRequest,
     bind_params: bool,
     parameters: IndexMap<String, BoundParam>,
     parameter_index: i32,
 }
 
-impl<'a> QueryBuilder<'a> {
-    fn new(request: &'a query_request::QueryRequest, bind_params: bool) -> Self {
+fn get_target_table(
+    target: &query_request::Target,
+) -> Result<&query_request::TableName, QueryBuilderError> {
+    match target {
+        query_request::Target::Table { name } => Ok(name),
+        query_request::Target::Interpolated { id } => Err(QueryBuilderError::Internal(
+            "Interpolated targets not supported".to_string(),
+        )),
+        query_request::Target::Function { function } => Err(QueryBuilderError::Internal(
+            "Function targets not supported".to_string(),
+        )),
+    }
+}
+
+fn get_relationship_target_table(
+    relationship: &query_request::Relationship,
+) -> Result<&query_request::TableName, QueryBuilderError> {
+    match relationship {
+        query_request::Relationship::Table {
+            column_mapping: _,
+            relationship_type: _,
+            target_table,
+        } => Ok(target_table),
+        query_request::Relationship::Target {
+            column_mapping: _,
+            relationship_type: _,
+            target,
+        } => get_target_table(target),
+    }
+}
+fn get_relationship_column_mapping(
+    relationship: &query_request::Relationship,
+) -> &query_request::ColumnMapping {
+    match relationship {
+        query_request::Relationship::Table {
+            column_mapping,
+            relationship_type: _,
+            target_table: _,
+        } => column_mapping,
+        query_request::Relationship::Target {
+            column_mapping,
+            relationship_type: _,
+            target: _,
+        } => column_mapping,
+    }
+}
+
+impl<'request> QueryBuilder<'request> {
+    fn new(request: &'request query_request::QueryRequest, bind_params: bool) -> Self {
         Self {
             request,
             bind_params,
@@ -291,7 +338,7 @@ impl<'a> QueryBuilder<'a> {
         }
     }
     pub fn build_sql_statement(
-        request: &'a query_request::QueryRequest,
+        request: &'request query_request::QueryRequest,
         bind_params: bool,
     ) -> Result<Statement, QueryBuilderError> {
         let mut builder = Self::new(request, bind_params);
@@ -302,13 +349,46 @@ impl<'a> QueryBuilder<'a> {
 
         Ok(statement)
     }
-
+    fn request_table_relationships(&self) -> &'request Vec<query_request::TableRelationships> {
+        match self.request {
+            query_request::QueryRequest::Table {
+                foreach: _,
+                query: _,
+                table: _,
+                table_relationships,
+            } => table_relationships,
+            query_request::QueryRequest::Target {
+                foreach: _,
+                query: _,
+                target: _,
+                table_relationships,
+            } => table_relationships,
+        }
+    }
+    fn request_foreach(
+        &self,
+    ) -> &'request Option<Vec<IndexMap<String, query_request::ForEachValue>>> {
+        match self.request {
+            query_request::QueryRequest::Table {
+                foreach,
+                query: _,
+                table: _,
+                table_relationships: _,
+            } => foreach,
+            query_request::QueryRequest::Target {
+                foreach,
+                query: _,
+                target: _,
+                table_relationships: _,
+            } => foreach,
+        }
+    }
     fn table_relationship(
         &self,
         table: &query_request::TableName,
         relationship_name: &str,
-    ) -> Result<&'a query_request::Relationship, QueryBuilderError> {
-        let table_relationships = &self.request.table_relationships;
+    ) -> Result<&'request query_request::Relationship, QueryBuilderError> {
+        let table_relationships = self.request_table_relationships();
         let source_table = table_relationships
             .iter()
             .find(|table_relationships| table_relationships.source_table == *table)
@@ -327,10 +407,27 @@ impl<'a> QueryBuilder<'a> {
         Ok(relationship)
     }
     fn root_query(&mut self) -> Result<Query, QueryBuilderError> {
-        let table = &self.request.table;
-        let query = &self.request.query;
+        let (table, query) = match self.request {
+            query_request::QueryRequest::Table {
+                foreach: _,
+                query,
+                table,
+                table_relationships: _,
+            } => (table, query),
+            query_request::QueryRequest::Target {
+                foreach: _,
+                query,
+                target,
+                table_relationships: _,
+            } => (get_target_table(target)?, query),
+        };
 
-        let root_subquery = match &self.request.foreach {
+        let foreach = match self.request {
+            query_request::QueryRequest::Table { foreach, .. } => foreach,
+            query_request::QueryRequest::Target { foreach, .. } => foreach,
+        };
+
+        let root_subquery = match foreach {
             Some(foreach) => {
                 // todo: verify that all objects of the foreach collection have the same keys.
                 // fail gracefully if not
@@ -384,7 +481,7 @@ impl<'a> QueryBuilder<'a> {
         let query_expr =
             Expr::CompoundIdentifier(vec![Ident::quoted("_query"), Ident::quoted("query")]);
 
-        let root_projection = if self.request.foreach.is_some() {
+        let root_projection = if self.request_foreach().is_some() {
             let cast_typestring = root_foreach_row_type(query);
             vec![SelectItem::ExprWithAlias {
                 expr: sql_function(
@@ -863,38 +960,40 @@ impl<'a> QueryBuilder<'a> {
                 } => Some((alias, query, relationship)),
             })
             .map(|(alias, query, relationship)| {
-                {
-                    // todo: handle case where the relationship info is missing gracefully
-                    let relationship = self.table_relationship(table, relationship)?;
+                let relationship = self.table_relationship(table, relationship)?;
+                let column_mappings = get_relationship_column_mapping(relationship);
+                let relationship_table = get_relationship_target_table(relationship)?;
 
-                    let join_expr = relationship
-                        .column_mapping
-                        .iter()
-                        .map(|(source_col, target_col)| Expr::BinaryOp {
-                            left: Box::new(Expr::CompoundIdentifier(vec![
-                                Ident::quoted("_origin"),
-                                Ident::quoted(source_col),
-                            ])),
-                            op: BinaryOperator::Eq,
-                            right: Box::new(Expr::CompoundIdentifier(vec![
-                                Ident::quoted(format!("_rel.{alias}")),
-                                Ident::quoted(format!("_selection.{target_col}")),
-                            ])),
-                        })
-                        .reduce(and_reducer)
-                        .unwrap_or(Expr::Value(Value::Boolean(true)));
-
-                    let table = &relationship.target_table;
-                    let join_cols = &relationship.column_mapping.values().collect();
-
-                    Ok(Join {
-                        relation: TableFactor::Derived {
-                            subquery: self.query_subquery(table, join_cols, query, None)?,
-                            alias: Some(Ident::quoted(format!("_rel.{alias}"))),
-                        },
-                        join_operator: JoinOperator::LeftOuter(JoinConstraint::On(join_expr)),
+                let join_expr = column_mappings
+                    .iter()
+                    .map(|(source_col, target_col)| Expr::BinaryOp {
+                        left: Box::new(Expr::CompoundIdentifier(vec![
+                            Ident::quoted("_origin"),
+                            Ident::quoted(source_col),
+                        ])),
+                        op: BinaryOperator::Eq,
+                        right: Box::new(Expr::CompoundIdentifier(vec![
+                            Ident::quoted(format!("_rel.{alias}")),
+                            Ident::quoted(format!("_selection.{target_col}")),
+                        ])),
                     })
-                }
+                    .reduce(and_reducer)
+                    .unwrap_or(Expr::Value(Value::Boolean(true)));
+
+                let join_cols = &column_mappings.values().collect();
+
+                Ok(Join {
+                    relation: TableFactor::Derived {
+                        subquery: self.query_subquery(
+                            relationship_table,
+                            join_cols,
+                            query,
+                            None,
+                        )?,
+                        alias: Some(Ident::quoted(format!("_rel.{alias}"))),
+                    },
+                    join_operator: JoinOperator::LeftOuter(JoinConstraint::On(join_expr)),
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -1336,9 +1435,11 @@ impl<'a> QueryBuilder<'a> {
         };
         for (relationship_name, order_by_relation) in relations {
             let relationship = self.table_relationship(table, relationship_name)?;
+            let column_mappings = get_relationship_column_mapping(relationship);
+            let relationship_table = get_relationship_target_table(relationship)?;
 
             // parent table will need to expose these columns for this table to join on
-            for column in relationship.column_mapping.keys() {
+            for column in column_mappings.keys() {
                 if !parent_join_columns.contains(column) {
                     parent_join_columns.push(column.clone());
                 }
@@ -1349,7 +1450,7 @@ impl<'a> QueryBuilder<'a> {
 
             // child columns will be used by subsequent joins to join to this table
             let (child_columns, child_joins) = self.order_by_joins(
-                &relationship.target_table,
+                relationship_table,
                 &child_path,
                 &order_by_relation.subrelations,
                 order_by,
@@ -1407,7 +1508,7 @@ impl<'a> QueryBuilder<'a> {
             }
 
             // add columns needed joining to the parent table to the projection and group by, if not duplicates
-            for column in relationship.column_mapping.values() {
+            for column in column_mappings.values() {
                 let col_alias = format!("_col.{column}");
                 if !projection_cols.contains_key(&col_alias) {
                     let projection_col = SelectItem::ExprWithAlias {
@@ -1445,7 +1546,7 @@ impl<'a> QueryBuilder<'a> {
                         &mut exists_index,
                         true,
                         "_origin",
-                        table,
+                        relationship_table,
                     )?;
                     (Some(expr), joins)
                 }
@@ -1457,8 +1558,7 @@ impl<'a> QueryBuilder<'a> {
             let join_from = vec![TableWithJoins {
                 relation: TableFactor::Table {
                     name: ObjectName(
-                        relationship
-                            .target_table
+                        get_relationship_target_table(relationship)?
                             .iter()
                             .map(Ident::quoted)
                             .collect(),
@@ -1481,8 +1581,7 @@ impl<'a> QueryBuilder<'a> {
                     alias: Some(Ident::quoted(&child_alias)),
                 },
                 join_operator: JoinOperator::LeftOuter(JoinConstraint::On(
-                    relationship
-                        .column_mapping
+                    column_mappings
                         .iter()
                         .map(|(source_col, target_col)| Expr::BinaryOp {
                             left: Box::new(Expr::CompoundIdentifier(vec![
@@ -1709,8 +1808,11 @@ impl<'a> QueryBuilder<'a> {
                             }
                             query_request::ExistsInTable::RelatedTable { relationship } => {
                                 let relationship = self.table_relationship(table, relationship)?;
-                                let select_expr = relationship
-                                    .column_mapping
+                                let column_mappings = get_relationship_column_mapping(relationship);
+                                let relationship_table =
+                                    get_relationship_target_table(relationship)?;
+
+                                let select_expr = column_mappings
                                     .iter()
                                     .map(|(source_col, target_col)| {
                                         let left = Expr::CompoundIdentifier(vec![
@@ -1738,9 +1840,7 @@ impl<'a> QueryBuilder<'a> {
                                     .unwrap_or(Expr::Value(Value::Boolean(true)));
                                 let join_expr = select_expr.clone();
 
-                                let table_name = &relationship.target_table;
-                                let projection = relationship
-                                    .column_mapping
+                                let projection = column_mappings
                                     .iter()
                                     .map(|(_, target_col)| SelectItem::ExprWithAlias {
                                         expr: Expr::CompoundIdentifier(vec![
@@ -1750,8 +1850,7 @@ impl<'a> QueryBuilder<'a> {
                                         alias: Ident::quoted(target_col),
                                     })
                                     .collect();
-                                let group_by = relationship
-                                    .column_mapping
+                                let group_by = column_mappings
                                     .iter()
                                     .map(|(_, target_col)| {
                                         Expr::CompoundIdentifier(vec![
@@ -1765,7 +1864,7 @@ impl<'a> QueryBuilder<'a> {
                                 (
                                     select_expr,
                                     join_expr,
-                                    table_name,
+                                    relationship_table,
                                     projection,
                                     group_by,
                                     limit,
@@ -1831,9 +1930,10 @@ impl<'a> QueryBuilder<'a> {
                         }
                         query_request::ExistsInTable::RelatedTable { relationship } => {
                             let relationship = self.table_relationship(table, relationship)?;
+                            let column_mappings = get_relationship_column_mapping(relationship);
+                            let relationship_table = get_relationship_target_table(relationship)?;
 
-                            let select_expr = relationship
-                                .column_mapping
+                            let select_expr = column_mappings
                                 .iter()
                                 .map(|(source_col, target_col)| {
                                     let left = Expr::CompoundIdentifier(vec![
@@ -1861,9 +1961,7 @@ impl<'a> QueryBuilder<'a> {
                                 .unwrap_or(Expr::Value(Value::Boolean(true)));
                             let join_expr = select_expr.clone();
 
-                            let table_name = &relationship.target_table;
-
-                            (select_expr, join_expr, table_name)
+                            (select_expr, join_expr, relationship_table)
                         }
                     };
 
@@ -1925,7 +2023,10 @@ impl<'a> QueryBuilder<'a> {
         } else {
             match param {
                 BoundParam::Number(number) => Expr::Value(Value::Number(number.to_string())),
-                BoundParam::Value { value, value_type } => match value {
+                BoundParam::Value {
+                    value,
+                    value_type: _,
+                } => match value {
                     serde_json::Value::Number(number) => {
                         Expr::Value(Value::Number(number.to_string()))
                     }
