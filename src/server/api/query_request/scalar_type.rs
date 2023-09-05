@@ -30,7 +30,6 @@ pub enum ScalarType {
     Uuid,
     IPv4,
     IPv6,
-    Unknown,
     AvgUInt8,
     AvgUInt16,
     AvgUInt32,
@@ -99,4 +98,5 @@ pub enum ScalarType {
     MinDate32,
     MinDateTime,
     MinDateTime64,
+    Unknown,
 }
