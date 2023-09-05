@@ -15,9 +15,10 @@ use crate::server::{
 
 #[axum_macros::debug_handler]
 pub async fn get_capabilities() -> Json<CapabilitiesResponse> {
+    let package_version: &'static str = env!("CARGO_PKG_VERSION");
     Json(CapabilitiesResponse {
         display_name: Some("Clickhouse".to_owned()),
-        release_name: Some("Beta".to_string()),
+        release_name: Some(package_version.to_string()),
         config_schemas: get_openapi_config_schema_response(),
         capabilities: Capabilities {
             comparisons: Some(ComparisonCapabilities {
