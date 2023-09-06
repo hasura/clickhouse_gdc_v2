@@ -40,12 +40,12 @@ pub enum QueryRequest {
         query: Query,
         target: Target,
         /// The relationships between tables involved in the entire query request
-        table_relationships: Vec<TableRelationships>,
+        relationships: Vec<TableRelationships>,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Target {
     Table {
         /// The fully qualified name of a table, where the last item in the array is the table name and any earlier items represent the namespacing of the table name

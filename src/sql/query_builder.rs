@@ -361,8 +361,8 @@ impl<'request> QueryBuilder<'request> {
                 foreach: _,
                 query: _,
                 target: _,
-                table_relationships,
-            } => table_relationships,
+                relationships,
+            } => relationships,
         }
     }
     fn request_foreach(
@@ -379,7 +379,7 @@ impl<'request> QueryBuilder<'request> {
                 foreach,
                 query: _,
                 target: _,
-                table_relationships: _,
+                relationships: _,
             } => foreach,
         }
     }
@@ -418,7 +418,7 @@ impl<'request> QueryBuilder<'request> {
                 foreach: _,
                 query,
                 target,
-                table_relationships: _,
+                relationships: _,
             } => (get_target_table(target)?, query),
         };
 

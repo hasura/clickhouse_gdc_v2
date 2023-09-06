@@ -25,7 +25,7 @@ pub fn apply_aliases_to_query_request(
             ref mut foreach,
             ref mut query,
             ref mut target,
-            ref mut table_relationships,
+            relationships: ref mut table_relationships,
         } => match target {
             Target::Table { ref mut name } => (foreach, query, name, table_relationships),
             Target::Interpolated { .. } => {
