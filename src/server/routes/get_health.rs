@@ -1,4 +1,7 @@
-use axum::http::StatusCode;
+use axum::{
+    http::{header, StatusCode},
+    response::IntoResponse,
+};
 
 use crate::server::config::{SourceConfig, SourceName};
 
@@ -6,7 +9,11 @@ use crate::server::config::{SourceConfig, SourceName};
 pub async fn get_health(
     _source_name: Option<SourceName>,
     _config: Option<SourceConfig>,
-) -> StatusCode {
+) -> impl IntoResponse {
     // todo: if source_name and config provided, check if that specific source is healthy
-    StatusCode::NO_CONTENT
+
+    (
+        StatusCode::NO_CONTENT,
+        [(header::CONTENT_TYPE, "text/html")],
+    )
 }

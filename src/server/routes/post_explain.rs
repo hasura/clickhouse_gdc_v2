@@ -1,11 +1,11 @@
 use axum::Json;
 use axum_extra::extract::WithRejection;
+use gdc_rust_types::{ExplainResponse, QueryRequest};
 use serde::{Deserialize, Serialize};
 use tracing::{info_span, Instrument};
 
 use crate::{
     server::{
-        api::{explain_response::ExplainResponse, query_request::QueryRequest},
         client::execute_query,
         config::{SourceConfig, SourceName},
         error::ServerError,
@@ -24,7 +24,7 @@ pub async fn post_explain(
     let statement_string = statement.to_string();
     let explain_statement = format!("EXPLAIN {}", statement_string);
 
-    let query_plan: Vec<ExplainRow> = execute_query(&config, &explain_statement)
+    let query_plan: Vec<ExplainRow> = execute_query(&config, &explain_statement, &vec![])
         .instrument(info_span!("get_query_plan"))
         .await?;
 

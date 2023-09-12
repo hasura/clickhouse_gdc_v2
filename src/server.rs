@@ -1,5 +1,4 @@
-pub mod api;
-
+pub mod schema;
 use axum::{
     routing::{get, post},
     Router,
@@ -15,7 +14,8 @@ pub use config::Config;
 pub fn router() -> Router {
     Router::new()
         .route("/capabilities", get(get_capabilities))
-        .route("/schema", get(get_schema))
+        .route("/schema", get(post_schema))
+        .route("/schema", post(post_schema))
         .route("/query", post(post_query))
         .route("/mutation", post(post_mutation))
         .route("/raw", post(post_raw))

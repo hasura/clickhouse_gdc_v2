@@ -1,6 +1,6 @@
 [package]
 name = "clickhouse_gdc"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -14,7 +14,7 @@ tokio = { version = "1.27.0", features = [
   "rt-multi-thread",
   "signal",
 ] }
-indexmap = { version = "2.0.0", features = ["serde"] }
+indexmap = { version = "1.9.3", features = ["serde"] }
 reqwest = "0.11.18"
 schemars = "0.8.12"
 serde = { version = "1.0.171", features = ["derive"] }
@@ -31,6 +31,6 @@ tracing-opentelemetry-instrumentation-sdk = "0.12.0"
 opentelemetry = "0.19.0"
 opentelemetry-otlp = { version = "0.12.0", features = ["reqwest-client"] }
 peg = "0.8.1"
-openapi_type = "0.4.2"
-openapiv3-visit = "0.3.0"
 openapiv3 = "1.0.2"
+gdc_rust_types = { git = "https://github.com/hasura/gdc_rust_types", rev = "900d969" }
+strum = { version = "0.25.0", features = ["derive"] }

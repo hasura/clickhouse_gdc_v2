@@ -32,12 +32,14 @@ use super::config::Config;
 pub async fn execute_query<T: DeserializeOwned>(
     config: &Config,
     statement: &str,
+    parameters: &Vec<(String, String)>,
 ) -> Result<Vec<T>, Box<dyn Error>> {
     let client = reqwest::Client::new();
     let request = client
         .post(&config.url)
         .header("X-ClickHouse-User", &config.username)
         .header("X-ClickHouse-Key", &config.password)
+        .query(parameters)
         .body(statement.to_owned())
         .send()
         .await?;

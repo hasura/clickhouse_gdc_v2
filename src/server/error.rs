@@ -6,15 +6,16 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use axum_macros::FromRequest;
+use indexmap::IndexMap;
 
 use crate::sql::QueryBuilderError;
 
-use super::api::error_response::{ErrorResponse, ErrorResponseType};
+use gdc_rust_types::{ErrorResponse, ErrorResponseType};
 
 pub enum ServerError {
     NotFound(Uri),
     UncaughtError {
-        details: Option<serde_json::Value>,
+        details: Option<IndexMap<String, serde_json::Value>>,
         message: String,
         error_type: ErrorResponseType,
     },
@@ -36,7 +37,7 @@ impl IntoResponse for ServerError {
                 axum::Json(ErrorResponse {
                     details,
                     message,
-                    error_type,
+                    r#type: Some(error_type),
                 }),
             )
                 .into_response(),

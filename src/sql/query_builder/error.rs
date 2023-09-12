@@ -12,6 +12,11 @@ pub enum QueryBuilderError {
     TableMissing(Vec<String>),
     RelationshipMissingInTable(String, Vec<String>),
     MisshapenTableName(Vec<String>),
+    UnknownScalarType(String),
+    UnknownUnaryComparisonOperator(String),
+    UnknownBinaryComparisonOperator(String),
+    UnknownBinaryArrayComparisonOperator(String),
+    UnknownSingleColumnAggregateFunction(String),
 }
 
 impl Display for QueryBuilderError {
@@ -45,6 +50,21 @@ impl Display for QueryBuilderError {
                 "Misshapen table name, expected an array with a single string member, got {:?}",
                 table
             ),
+            QueryBuilderError::UnknownScalarType(name) => {
+                write!(f, "Unknown Scalar Type: {name}")
+            }
+            QueryBuilderError::UnknownUnaryComparisonOperator(name) => {
+                write!(f, "Unknown Unary Comparison Operator: {name}")
+            }
+            QueryBuilderError::UnknownBinaryComparisonOperator(name) => {
+                write!(f, "Unknown Binary Comparison Operator: {name}")
+            }
+            QueryBuilderError::UnknownBinaryArrayComparisonOperator(name) => {
+                write!(f, "Unknown Binary Array Comparison Operator: {name}")
+            }
+            QueryBuilderError::UnknownSingleColumnAggregateFunction(name) => {
+                write!(f, "Unknown Single Column Aggregate Function: {name}")
+            }
         }
     }
 }

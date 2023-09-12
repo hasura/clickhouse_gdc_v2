@@ -1,13 +1,10 @@
 use axum::Json;
 use axum_extra::extract::WithRejection;
+use gdc_rust_types::{ErrorResponseType, QueryRequest, QueryResponse};
 use tracing::{info_span, Instrument};
 
 use crate::{
     server::{
-        api::{
-            error_response::ErrorResponseType, query_request::QueryRequest,
-            query_response::QueryResponse,
-        },
         client::execute_query,
         config::{SourceConfig, SourceName},
         error::ServerError,
@@ -26,7 +23,7 @@ pub async fn post_query(
 
     let statement_string = statement.to_string();
 
-    let rows: Vec<QueryResponse> = execute_query(&config, &statement_string)
+    let rows: Vec<QueryResponse> = execute_query(&config, &statement_string, &vec![])
         .instrument(info_span!("execute_query"))
         .await?;
 

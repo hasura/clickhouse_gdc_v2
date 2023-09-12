@@ -1,34 +1,39 @@
+use core::fmt;
 use std::str::FromStr;
 
 use axum::Json;
+use axum_extra::extract::WithRejection;
+use gdc_rust_types::{
+    ColumnInfo, ColumnType, ErrorResponseType, SchemaRequest, SchemaResponse, TableInfo, TableType,
+};
 use serde::{Deserialize, Serialize};
-mod clickhouse_data_type;
 
 use crate::server::{
-    api::{
-        query_request::ScalarType,
-        schema_response::{ColumnInfo, ColumnType, SchemaResponse, TableInfo, TableType},
-    },
     client::execute_query,
     config::{SourceConfig, SourceName},
     error::ServerError,
-    routes::get_schema::clickhouse_data_type::Identifier,
+    schema::{
+        clickhouse_data_type::{ClickhouseDataType, Identifier, SingleQuotedString},
+        ScalarType,
+    },
     Config,
 };
 
-use self::clickhouse_data_type::ClickhouseDataType;
-
 #[axum_macros::debug_handler]
-pub async fn get_schema(
+pub async fn post_schema(
     SourceName(_source_name): SourceName,
     SourceConfig(config): SourceConfig,
+    WithRejection(Json(request), _): WithRejection<Json<Option<SchemaRequest>>, ServerError>,
 ) -> Result<Json<SchemaResponse>, ServerError> {
-    let introspection_sql = include_str!("../database_introspection.sql");
+    let (introspection_sql, parameters) = get_introspection_sql(&request, &config)?;
 
-    let introspection: Vec<TableIntrospection> = execute_query(&config, introspection_sql).await?;
+    let introspection: Vec<TableIntrospection> =
+        execute_query(&config, introspection_sql, &parameters).await?;
 
     let response = SchemaResponse {
+        // todo: add functions
         functions: None,
+        // todo: add object types
         object_types: None,
         tables: introspection
             .into_iter()
@@ -40,39 +45,47 @@ pub async fn get_schema(
                     columns,
                 } = table;
 
+                let columns = if let Some(columns) = columns {
+                    Some(
+                        columns
+                            .into_iter()
+                            .map(|column| {
+                                let ColumnIntrospection {
+                                    name: column_name,
+                                    column_type,
+                                    nullable,
+                                } = column;
+
+                                let scalar_type = ClickhouseDataType::from_str(&column_type)
+                                    .map(|data_type| get_scalar_type(&data_type))
+                                    .unwrap_or(ScalarType::Unknown);
+
+                                Ok(ColumnInfo {
+                                    name: aliased_column_name(&table_name, &column_name, &config),
+                                    description: None,
+                                    nullable,
+                                    insertable: None,
+                                    updatable: None,
+                                    value_generated: None,
+                                    r#type: ColumnType::Scalar(scalar_type.to_string()),
+                                })
+                            })
+                            .collect::<Result<_, ServerError>>()?,
+                    )
+                } else {
+                    None
+                };
+
                 Ok(TableInfo {
                     name: vec![aliased_table_name(&table_name, &config)],
                     description: None,
-                    table_type: Some(table_type),
-                    primary_key: Some(primary_key),
+                    r#type: table_type,
+                    primary_key,
                     foreign_keys: None,
                     insertable: None,
                     updatable: None,
                     deletable: None,
-                    columns: columns
-                        .into_iter()
-                        .map(|column| {
-                            let ColumnIntrospection {
-                                name: column_name,
-                                column_type,
-                                nullable,
-                            } = column;
-
-                            let scalar_type = ClickhouseDataType::from_str(&column_type)
-                                .map(|data_type| get_scalar_type(&data_type))
-                                .unwrap_or(ScalarType::Unknown);
-
-                            Ok(ColumnInfo {
-                                name: aliased_column_name(&table_name, &column_name, &config),
-                                description: None,
-                                nullable,
-                                insertable: None,
-                                updatable: None,
-                                value_generated: None,
-                                column_type: ColumnType::ScalarType(scalar_type),
-                            })
-                        })
-                        .collect::<Result<_, ServerError>>()?,
+                    columns,
                 })
             })
             .collect::<Result<_, ServerError>>()?,
@@ -84,9 +97,9 @@ pub async fn get_schema(
 #[derive(Debug, Serialize, Deserialize)]
 struct TableIntrospection {
     name: String,
-    primary_key: Vec<String>,
-    table_type: TableType,
-    columns: Vec<ColumnIntrospection>,
+    primary_key: Option<Vec<String>>,
+    table_type: Option<TableType>,
+    columns: Option<Vec<ColumnIntrospection>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,6 +107,12 @@ struct ColumnIntrospection {
     name: String,
     column_type: String,
     nullable: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TableArgument {
+    name: String,
+    data_type: String,
 }
 
 fn aliased_table_name(table_name: &str, config: &Config) -> String {
@@ -308,4 +327,116 @@ fn get_scalar_type(data_type: &ClickhouseDataType) -> ScalarType {
     };
 
     scalar_type
+}
+
+fn get_introspection_sql(
+    request: &Option<SchemaRequest>,
+    config: &Config,
+) -> Result<(&'static str, Vec<(String, String)>), ServerError> {
+    if let Some(request) = request {
+        let detail_level = request
+            .detail_level
+            .as_ref()
+            .unwrap_or(&gdc_rust_types::DetailLevel::Everything);
+        let filter_tables = request
+            .filters
+            .as_ref()
+            .and_then(|filters| filters.only_tables.as_ref());
+
+        if let Some(tables) = filter_tables {
+            let table_names = tables
+                .iter()
+                .map(|table_name| {
+                    if let [name] = &table_name.as_slice() {
+                        Ok(name.to_owned())
+                    } else {
+                        Err(ServerError::UncaughtError {
+                            details: None,
+                            message: format!(
+                                "Expected table name to be an array with one element, got {:?}",
+                                table_name
+                            ),
+                            error_type: ErrorResponseType::UncaughtError,
+                        })
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let aliased_table_names = table_names
+                .into_iter()
+                .map(|table_name| {
+                    config
+                        .tables
+                        .as_ref()
+                        .and_then(|config_tables| {
+                            let config_table = config_tables.iter().find(|config_table| {
+                                config_table
+                                    .alias
+                                    .as_ref()
+                                    .is_some_and(|alias| alias == &table_name)
+                            });
+                            config_table.map(|config_table| config_table.name.to_owned())
+                        })
+                        .unwrap_or(table_name)
+                })
+                .collect();
+
+            struct TableNamesArg(Vec<String>);
+            impl fmt::Display for TableNamesArg {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    write!(f, "[")?;
+
+                    let mut first = true;
+
+                    for table_name in &self.0 {
+                        if first {
+                            first = false;
+                        } else {
+                            write!(f, ",")?;
+                        }
+
+                        let escaped_name = table_name
+                            .to_owned()
+                            .replace('\\', r"\\")
+                            .replace('\'', r"\'");
+                        write!(f, "'{}'", escaped_name)?;
+                    }
+
+                    write!(f, "]")
+                }
+            }
+
+            let tables_arg = (
+                "param_table_names".to_string(),
+                TableNamesArg(aliased_table_names).to_string(),
+            );
+
+            match detail_level {
+                gdc_rust_types::DetailLevel::Everything => Ok((
+                    include_str!("./introspection/everything_filtered.sql"),
+                    vec![tables_arg],
+                )),
+                gdc_rust_types::DetailLevel::BasicInfo => Ok((
+                    include_str!("./introspection/basic_info_filtered.sql"),
+                    vec![tables_arg],
+                )),
+            }
+        } else {
+            match detail_level {
+                gdc_rust_types::DetailLevel::Everything => Ok((
+                    include_str!("./introspection/everything_unfiltered.sql"),
+                    vec![],
+                )),
+                gdc_rust_types::DetailLevel::BasicInfo => Ok((
+                    include_str!("./introspection/basic_info_unfiltered.sql"),
+                    vec![],
+                )),
+            }
+        }
+    } else {
+        Ok((
+            include_str!("./introspection/everything_unfiltered.sql"),
+            vec![],
+        ))
+    }
 }

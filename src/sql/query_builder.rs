@@ -1,21 +1,21 @@
-use std::vec;
+use std::{str::FromStr, vec};
 
 use super::ast::{
     BinaryOperator, Expr, Function, FunctionArgExpr, Ident, Join, JoinConstraint, JoinOperator,
     LimitByExpr, ObjectName, OrderByExpr, Query, SelectItem, Statement, TableFactor,
     TableWithJoins, UnaryOperator, Value,
 };
-use crate::server::api::query_request::{self, BinaryComparisonOperator, ScalarType};
 use indexmap::IndexMap;
 pub mod aliasing;
 mod error;
+use crate::server::schema;
 pub use error::QueryBuilderError;
 
 pub enum BoundParam {
     Number(serde_json::Number),
     Value {
         value: serde_json::Value,
-        value_type: query_request::ScalarType,
+        value_type: schema::ScalarType,
     },
 }
 
@@ -30,8 +30,8 @@ fn sql_function(name: &str, args: Vec<Expr>) -> Expr {
 
 // we use the function name to alias aggregate columns when necessary.
 // the name should be reasonable short, and a valid part of a sql identifier when quoted
-fn function_name(function: &query_request::SingleColumnAggregateFunction) -> &'static str {
-    use query_request::SingleColumnAggregateFunction as CA;
+fn function_name(function: &schema::SingleColumnAggregateFunction) -> &'static str {
+    use schema::SingleColumnAggregateFunction as CA;
     match function {
         CA::Avg => "avg",
         CA::Max => "max",
@@ -65,11 +65,8 @@ fn or_reducer(left: Expr, right: Expr) -> Expr {
     }
 }
 
-fn single_column_aggregate(
-    function: &query_request::SingleColumnAggregateFunction,
-    column: Expr,
-) -> Expr {
-    use query_request::SingleColumnAggregateFunction as CA;
+fn single_column_aggregate(function: &schema::SingleColumnAggregateFunction, column: Expr) -> Expr {
+    use schema::SingleColumnAggregateFunction as CA;
     match function {
         CA::Avg => sql_function("avg", vec![column]),
         CA::Max => sql_function("max", vec![column]),
@@ -88,62 +85,80 @@ fn single_column_aggregate(
     }
 }
 
-fn root_foreach_row_type(query: &query_request::Query) -> String {
-    format!("Array(Tuple(query {}))", query_object_type(query))
+fn root_foreach_row_type(query: &gdc_rust_types::Query) -> Result<String, QueryBuilderError> {
+    Ok(format!("Array(Tuple(query {}))", query_object_type(query)?))
 }
-fn root_rows_type(fields: &query_request::Fields) -> String {
-    format!("Array({})", rows_object_type(fields))
+fn root_rows_type(
+    fields: &IndexMap<String, gdc_rust_types::Field>,
+) -> Result<String, QueryBuilderError> {
+    Ok(format!("Array({})", rows_object_type(fields)?))
 }
-fn root_aggregates_type(aggregates: &query_request::Aggregates) -> String {
+fn root_aggregates_type(
+    aggregates: &IndexMap<String, gdc_rust_types::Aggregate>,
+) -> Result<String, QueryBuilderError> {
     aggregates_object_type(aggregates)
 }
 
-fn query_object_type(query: &query_request::Query) -> String {
-    match (&query.fields, &query.aggregates) {
+fn query_object_type(query: &gdc_rust_types::Query) -> Result<String, QueryBuilderError> {
+    Ok(match (&query.fields, &query.aggregates) {
         (None, None) => "Map(Nothing, Nothing)".to_owned(),
         (Some(fields), None) => {
-            let fields_type = rows_object_type(fields);
+            let fields_type = rows_object_type(fields)?;
             format!("Tuple(rows Array({}))", fields_type)
         }
         (None, Some(aggregates)) => {
-            let aggregates_type = aggregates_object_type(aggregates);
+            let aggregates_type = aggregates_object_type(aggregates)?;
             format!("Tuple(aggregates {})", aggregates_type)
         }
         (Some(fields), Some(aggregates)) => {
-            let fields_type = rows_object_type(fields);
-            let aggregates_type = aggregates_object_type(aggregates);
+            let fields_type = rows_object_type(fields)?;
+            let aggregates_type = aggregates_object_type(aggregates)?;
             format!(
                 "Tuple(rows Array({}), aggregates {})",
                 fields_type, aggregates_type
             )
         }
-    }
+    })
 }
-fn rows_object_type(fields: &query_request::Fields) -> String {
-    if fields.is_empty() {
+fn rows_object_type(
+    fields: &IndexMap<String, gdc_rust_types::Field>,
+) -> Result<String, QueryBuilderError> {
+    Ok(if fields.is_empty() {
         "Map(Nothing, Nothing)".to_string()
     } else {
         let field_types = fields
             .iter()
             .map(|(column_name, field)| {
                 let field_type = match field {
-                    query_request::Field::Column {
+                    gdc_rust_types::Field::Column {
                         column: _,
                         column_type,
-                    } => type_cast_string(column_type),
-                    query_request::Field::Relationship {
+                    } => type_cast_string(column_type)?,
+                    gdc_rust_types::Field::Relationship {
                         query,
                         relationship: _,
-                    } => query_object_type(query),
+                    } => query_object_type(query)?,
+                    gdc_rust_types::Field::Object { .. } => {
+                        return Err(QueryBuilderError::Internal(
+                            "Object fields not supported".to_string(),
+                        ))
+                    }
+                    gdc_rust_types::Field::Array { .. } => {
+                        return Err(QueryBuilderError::Internal(
+                            "Array fields not supported".to_string(),
+                        ))
+                    }
                 };
-                format!("\"{}\" {}", column_name, field_type)
+                Ok(format!("\"{}\" {}", column_name, field_type))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         format!("Tuple({})", field_types.join(", "))
-    }
+    })
 }
-fn aggregates_object_type(aggregates: &query_request::Aggregates) -> String {
-    if aggregates.is_empty() {
+fn aggregates_object_type(
+    aggregates: &IndexMap<String, gdc_rust_types::Aggregate>,
+) -> Result<String, QueryBuilderError> {
+    Ok(if aggregates.is_empty() {
         "Map(Nothing, Nothing)".to_string()
     } else {
         let aggregates_types = aggregates
@@ -153,24 +168,26 @@ fn aggregates_object_type(aggregates: &query_request::Aggregates) -> String {
                     // note! casting from UInt64 to UInt32 here
                     // UInt64 is serialized as a JSON string, but test suite expects JSON numbers
                     // todo: once we are able to specify return type for these aggregates, update this cast to the correct type
-                    query_request::Aggregate::ColumnCount { .. } => "UInt32".to_owned(),
-                    query_request::Aggregate::StarCount => "UInt32".to_owned(),
-                    query_request::Aggregate::SingleColumn { result_type, .. } => {
-                        type_cast_string(result_type)
+                    gdc_rust_types::Aggregate::ColumnCount { .. } => "UInt32".to_owned(),
+                    gdc_rust_types::Aggregate::StarCount {} => "UInt32".to_owned(),
+                    gdc_rust_types::Aggregate::SingleColumn { result_type, .. } => {
+                        type_cast_string(result_type)?
                     }
                 };
-                format!("\"{}\" {}", column_name, aggregate_type)
+                Ok(format!("\"{}\" {}", column_name, aggregate_type))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         format!("Tuple({})", aggregates_types.join(", "))
-    }
+    })
 }
 /// given a scalar type, return the type for the variant of this type that is nullable
 /// used when casting rows to named tuples, which is later used to cast to JSON
 /// we always wrap the type name in Nullable() as we don't know if the underlying column is nulable or not
-fn type_cast_string(scalar_type: &query_request::ScalarType) -> String {
-    use query_request::ScalarType as ST;
-    match scalar_type {
+fn type_cast_string(scalar_type: &gdc_rust_types::ScalarType) -> Result<String, QueryBuilderError> {
+    let scalar_type = schema::ScalarType::from_str(scalar_type)
+        .map_err(|err| QueryBuilderError::UnknownScalarType(scalar_type.to_owned()))?;
+    use schema::ScalarType as ST;
+    Ok(match scalar_type {
         ST::Bool => "Nullable(Bool)",
         ST::String => "Nullable(String)",
         ST::FixedString => "Nullable(FixedString)",
@@ -271,65 +288,32 @@ fn type_cast_string(scalar_type: &query_request::ScalarType) -> String {
         ST::MinDateTime => "Nullable(String)",
         ST::MinDateTime64 => "Nullable(String)",
     }
-    .to_owned()
+    .to_owned())
 }
 
 pub struct QueryBuilder<'request> {
-    request: &'request query_request::QueryRequest,
+    request: &'request gdc_rust_types::QueryRequest,
     bind_params: bool,
     parameters: IndexMap<String, BoundParam>,
     parameter_index: i32,
 }
 
 fn get_target_table(
-    target: &query_request::Target,
-) -> Result<&query_request::TableName, QueryBuilderError> {
+    target: &gdc_rust_types::Target,
+) -> Result<&gdc_rust_types::TableName, QueryBuilderError> {
     match target {
-        query_request::Target::Table { name } => Ok(name),
-        query_request::Target::Interpolated { id } => Err(QueryBuilderError::Internal(
+        gdc_rust_types::Target::Table { name } => Ok(name),
+        gdc_rust_types::Target::Interpolated { id } => Err(QueryBuilderError::Internal(
             "Interpolated targets not supported".to_string(),
         )),
-        query_request::Target::Function { function } => Err(QueryBuilderError::Internal(
-            "Function targets not supported".to_string(),
+        gdc_rust_types::Target::Function { name, arguments } => Err(QueryBuilderError::Internal(
+            "Function targets not yet supported".to_string(),
         )),
-    }
-}
-
-fn get_relationship_target_table(
-    relationship: &query_request::Relationship,
-) -> Result<&query_request::TableName, QueryBuilderError> {
-    match relationship {
-        query_request::Relationship::Table {
-            column_mapping: _,
-            relationship_type: _,
-            target_table,
-        } => Ok(target_table),
-        query_request::Relationship::Target {
-            column_mapping: _,
-            relationship_type: _,
-            target,
-        } => get_target_table(target),
-    }
-}
-fn get_relationship_column_mapping(
-    relationship: &query_request::Relationship,
-) -> &query_request::ColumnMapping {
-    match relationship {
-        query_request::Relationship::Table {
-            column_mapping,
-            relationship_type: _,
-            target_table: _,
-        } => column_mapping,
-        query_request::Relationship::Target {
-            column_mapping,
-            relationship_type: _,
-            target: _,
-        } => column_mapping,
     }
 }
 
 impl<'request> QueryBuilder<'request> {
-    fn new(request: &'request query_request::QueryRequest, bind_params: bool) -> Self {
+    fn new(request: &'request gdc_rust_types::QueryRequest, bind_params: bool) -> Self {
         Self {
             request,
             bind_params,
@@ -338,7 +322,7 @@ impl<'request> QueryBuilder<'request> {
         }
     }
     pub fn build_sql_statement(
-        request: &'request query_request::QueryRequest,
+        request: &'request gdc_rust_types::QueryRequest,
         bind_params: bool,
     ) -> Result<Statement, QueryBuilderError> {
         let mut builder = Self::new(request, bind_params);
@@ -349,47 +333,14 @@ impl<'request> QueryBuilder<'request> {
 
         Ok(statement)
     }
-    fn request_table_relationships(&self) -> &'request Vec<query_request::TableRelationships> {
-        match self.request {
-            query_request::QueryRequest::Table {
-                foreach: _,
-                query: _,
-                table: _,
-                table_relationships,
-            } => table_relationships,
-            query_request::QueryRequest::Target {
-                foreach: _,
-                query: _,
-                target: _,
-                relationships,
-            } => relationships,
-        }
-    }
-    fn request_foreach(
-        &self,
-    ) -> &'request Option<Vec<IndexMap<String, query_request::ForEachValue>>> {
-        match self.request {
-            query_request::QueryRequest::Table {
-                foreach,
-                query: _,
-                table: _,
-                table_relationships: _,
-            } => foreach,
-            query_request::QueryRequest::Target {
-                foreach,
-                query: _,
-                target: _,
-                relationships: _,
-            } => foreach,
-        }
-    }
     fn table_relationship(
         &self,
-        table: &query_request::TableName,
+        table: &gdc_rust_types::TableName,
         relationship_name: &str,
-    ) -> Result<&'request query_request::Relationship, QueryBuilderError> {
-        let table_relationships = self.request_table_relationships();
-        let source_table = table_relationships
+    ) -> Result<&'request gdc_rust_types::Relationship, QueryBuilderError> {
+        let source_table = self
+            .request
+            .relationships
             .iter()
             .find(|table_relationships| table_relationships.source_table == *table)
             .ok_or_else(|| QueryBuilderError::TableMissing(table.to_owned()))?;
@@ -407,27 +358,10 @@ impl<'request> QueryBuilder<'request> {
         Ok(relationship)
     }
     fn root_query(&mut self) -> Result<Query, QueryBuilderError> {
-        let (table, query) = match self.request {
-            query_request::QueryRequest::Table {
-                foreach: _,
-                query,
-                table,
-                table_relationships: _,
-            } => (table, query),
-            query_request::QueryRequest::Target {
-                foreach: _,
-                query,
-                target,
-                relationships: _,
-            } => (get_target_table(target)?, query),
-        };
+        let query = &self.request.query;
+        let table = get_target_table(&self.request.target)?;
 
-        let foreach = match self.request {
-            query_request::QueryRequest::Table { foreach, .. } => foreach,
-            query_request::QueryRequest::Target { foreach, .. } => foreach,
-        };
-
-        let root_subquery = match foreach {
+        let root_subquery = match &self.request.foreach {
             Some(foreach) => {
                 // todo: verify that all objects of the foreach collection have the same keys.
                 // fail gracefully if not
@@ -481,8 +415,7 @@ impl<'request> QueryBuilder<'request> {
         let query_expr =
             Expr::CompoundIdentifier(vec![Ident::quoted("_query"), Ident::quoted("query")]);
 
-        let root_projection = if self.request_foreach().is_some() {
-            let cast_typestring = root_foreach_row_type(query);
+        let root_projection = if self.request.foreach.is_some() {
             vec![SelectItem::ExprWithAlias {
                 expr: sql_function(
                     "cast",
@@ -491,7 +424,7 @@ impl<'request> QueryBuilder<'request> {
                             "tupleElement",
                             vec![query_expr, Expr::Value(Value::Number("1".to_owned()))],
                         ),
-                        Expr::Value(Value::SingleQuotedString(cast_typestring)),
+                        Expr::Value(Value::SingleQuotedString(root_foreach_row_type(query)?)),
                     ],
                 ),
                 alias: Ident::quoted("rows"),
@@ -510,7 +443,7 @@ impl<'request> QueryBuilder<'request> {
                                 ),
                                 Expr::Value(Value::SingleQuotedString(root_aggregates_type(
                                     aggregates,
-                                ))),
+                                )?)),
                             ],
                         ),
                         alias: Ident::quoted("aggregates"),
@@ -525,7 +458,7 @@ impl<'request> QueryBuilder<'request> {
                                     "tupleElement",
                                     vec![query_expr, Expr::Value(Value::Number("1".to_owned()))],
                                 ),
-                                Expr::Value(Value::SingleQuotedString(root_rows_type(fields))),
+                                Expr::Value(Value::SingleQuotedString(root_rows_type(fields)?)),
                             ],
                         ),
                         alias: Ident::quoted("rows"),
@@ -544,7 +477,7 @@ impl<'request> QueryBuilder<'request> {
                                             Expr::Value(Value::Number("1".to_owned())),
                                         ],
                                     ),
-                                    Expr::Value(Value::SingleQuotedString(root_rows_type(fields))),
+                                    Expr::Value(Value::SingleQuotedString(root_rows_type(fields)?)),
                                 ],
                             ),
                             alias: Ident::quoted("rows"),
@@ -562,7 +495,7 @@ impl<'request> QueryBuilder<'request> {
                                     ),
                                     Expr::Value(Value::SingleQuotedString(root_aggregates_type(
                                         aggregates,
-                                    ))),
+                                    )?)),
                                 ],
                             ),
                             alias: Ident::quoted("aggregates"),
@@ -584,9 +517,9 @@ impl<'request> QueryBuilder<'request> {
     }
     fn query_subquery(
         &mut self,
-        table: &query_request::TableName,
+        table: &gdc_rust_types::TableName,
         join_cols: &Vec<&String>,
-        query: &query_request::Query,
+        query: &gdc_rust_types::Query,
         foreach: Option<(TableFactor, &[&String])>,
     ) -> Result<Box<Query>, QueryBuilderError> {
         let foreach_columns = foreach
@@ -771,10 +704,10 @@ impl<'request> QueryBuilder<'request> {
     }
     fn rows_subquery(
         &mut self,
-        table: &query_request::TableName,
+        table: &gdc_rust_types::TableName,
         join_cols: &[&String],
-        fields: &query_request::Fields,
-        query: &query_request::Query,
+        fields: &IndexMap<String, gdc_rust_types::Field>,
+        query: &gdc_rust_types::Query,
         foreach_columns: &Option<&[&String]>,
     ) -> Result<Box<Query>, QueryBuilderError> {
         let row_subquery = self.row_subquery(table, join_cols, fields, query, foreach_columns)?;
@@ -864,10 +797,10 @@ impl<'request> QueryBuilder<'request> {
     }
     fn row_subquery(
         &mut self,
-        table: &query_request::TableName,
+        table: &gdc_rust_types::TableName,
         join_cols: &[&String],
-        fields: &query_request::Fields,
-        query: &query_request::Query,
+        fields: &IndexMap<String, gdc_rust_types::Field>,
+        query: &gdc_rust_types::Query,
         foreach_columns: &Option<&[&String]>,
     ) -> Result<Box<Query>, QueryBuilderError> {
         let selection_columns_expressions =
@@ -876,31 +809,47 @@ impl<'request> QueryBuilder<'request> {
                 alias: Ident::quoted(format!("_selection.{col}")),
             });
 
-        let row_columns_expressions = fields.iter().map(|(alias, field)| match field {
-            query_request::Field::Column {
-                column,
-                column_type,
-            } => {
-                let identifier =
-                    Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(column)]);
+        let row_columns_expressions = fields
+            .iter()
+            .map(|(alias, field)| match field {
+                gdc_rust_types::Field::Column {
+                    column,
+                    column_type,
+                } => {
+                    let identifier = Expr::CompoundIdentifier(vec![
+                        Ident::quoted("_origin"),
+                        Ident::quoted(column),
+                    ]);
+                    let column_type = schema::ScalarType::from_str(column_type).map_err(|_| {
+                        QueryBuilderError::UnknownScalarType(column_type.to_owned())
+                    })?;
 
-                let expr = match column_type {
-                    ScalarType::Unknown => sql_function("toJSONString", vec![identifier]),
-                    _ => identifier,
-                };
-                SelectItem::ExprWithAlias {
-                    expr,
-                    alias: Ident::quoted(format!("_projection.{alias}")),
+                    let expr = match column_type {
+                        schema::ScalarType::Unknown => {
+                            sql_function("toJSONString", vec![identifier])
+                        }
+                        _ => identifier,
+                    };
+                    Ok(SelectItem::ExprWithAlias {
+                        expr,
+                        alias: Ident::quoted(format!("_projection.{alias}")),
+                    })
                 }
-            }
-            query_request::Field::Relationship { .. } => SelectItem::ExprWithAlias {
-                expr: Expr::CompoundIdentifier(vec![
-                    Ident::quoted(format!("_rel.{alias}")),
-                    Ident::quoted("query"),
-                ]),
-                alias: Ident::quoted(format!("_projection.{alias}")),
-            },
-        });
+                gdc_rust_types::Field::Relationship { .. } => Ok(SelectItem::ExprWithAlias {
+                    expr: Expr::CompoundIdentifier(vec![
+                        Ident::quoted(format!("_rel.{alias}")),
+                        Ident::quoted("query"),
+                    ]),
+                    alias: Ident::quoted(format!("_projection.{alias}")),
+                }),
+                gdc_rust_types::Field::Object { .. } => Err(QueryBuilderError::Internal(
+                    "Object fields not supported".to_string(),
+                )),
+                gdc_rust_types::Field::Array { .. } => Err(QueryBuilderError::Internal(
+                    "Array fields not supported".to_string(),
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let row_foreach_column_expressions = match foreach_columns {
             Some(foreach_columns) => foreach_columns
@@ -935,7 +884,7 @@ impl<'request> QueryBuilder<'request> {
             row_projection
         };
 
-        let (row_selection, exists_joins) = match &query.selection {
+        let (row_selection, exists_joins) = match &query.r#where {
             Some(expression) => {
                 let mut exists_index = 0;
                 let (expr, joins) = self.selection_expression(
@@ -953,18 +902,17 @@ impl<'request> QueryBuilder<'request> {
         let relationship_joins = fields
             .iter()
             .filter_map(|(alias, field)| match field {
-                query_request::Field::Column { .. } => None,
-                query_request::Field::Relationship {
+                gdc_rust_types::Field::Relationship {
                     query,
                     relationship,
                 } => Some((alias, query, relationship)),
+                _ => None,
             })
             .map(|(alias, query, relationship)| {
                 let relationship = self.table_relationship(table, relationship)?;
-                let column_mappings = get_relationship_column_mapping(relationship);
-                let relationship_table = get_relationship_target_table(relationship)?;
 
-                let join_expr = column_mappings
+                let join_expr = relationship
+                    .column_mapping
                     .iter()
                     .map(|(source_col, target_col)| Expr::BinaryOp {
                         left: Box::new(Expr::CompoundIdentifier(vec![
@@ -980,7 +928,9 @@ impl<'request> QueryBuilder<'request> {
                     .reduce(and_reducer)
                     .unwrap_or(Expr::Value(Value::Boolean(true)));
 
-                let join_cols = &column_mappings.values().collect();
+                let join_cols = &relationship.column_mapping.values().collect();
+
+                let relationship_table = get_target_table(&relationship.target)?;
 
                 Ok(Join {
                     relation: TableFactor::Derived {
@@ -1028,10 +978,10 @@ impl<'request> QueryBuilder<'request> {
     }
     fn aggregates_subquery(
         &mut self,
-        table: &query_request::TableName,
+        table: &gdc_rust_types::TableName,
         join_cols: &[&String],
-        aggregates: &query_request::Aggregates,
-        query: &query_request::Query,
+        aggregates: &IndexMap<String, gdc_rust_types::Aggregate>,
+        query: &gdc_rust_types::Query,
         foreach_columns: &Option<&[&String]>,
     ) -> Result<Box<Query>, QueryBuilderError> {
         let aggregate_subquery =
@@ -1040,13 +990,13 @@ impl<'request> QueryBuilder<'request> {
             .iter()
             .map(|(alias, field)| {
                 let colum_expr = match field {
-                    query_request::Aggregate::StarCount => Expr::Function(Function {
+                    gdc_rust_types::Aggregate::StarCount {} => Expr::Function(Function {
                         name: ObjectName(vec![Ident::unquoted("COUNT")]),
                         args: vec![FunctionArgExpr::Wildcard],
                         over: None,
                         distinct: false,
                     }),
-                    query_request::Aggregate::ColumnCount {
+                    gdc_rust_types::Aggregate::ColumnCount {
                         column: _,
                         distinct,
                     } => {
@@ -1061,18 +1011,24 @@ impl<'request> QueryBuilder<'request> {
                             distinct: distinct.to_owned(),
                         })
                     }
-                    query_request::Aggregate::SingleColumn { function, .. } => {
+                    gdc_rust_types::Aggregate::SingleColumn { function, .. } => {
                         let column = Expr::CompoundIdentifier(vec![
                             Ident::quoted("_row"),
                             Ident::quoted(format!("_projection.{alias}")),
                         ]);
-                        single_column_aggregate(function, column)
+                        let function = schema::SingleColumnAggregateFunction::from_str(function)
+                            .map_err(|_| {
+                                QueryBuilderError::UnknownSingleColumnAggregateFunction(
+                                    function.to_owned(),
+                                )
+                            })?;
+                        single_column_aggregate(&function, column)
                     }
                 };
 
-                (alias.clone(), colum_expr)
+                Ok((alias.clone(), colum_expr))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let aggregates_projection = join_cols
             .iter()
@@ -1143,10 +1099,10 @@ impl<'request> QueryBuilder<'request> {
     }
     fn aggregate_subquery(
         &mut self,
-        table: &query_request::TableName,
+        table: &gdc_rust_types::TableName,
         join_cols: &[&String],
-        aggregates: &query_request::Aggregates,
-        query: &query_request::Query,
+        aggregates: &IndexMap<String, gdc_rust_types::Aggregate>,
+        query: &gdc_rust_types::Query,
         foreach_columns: &Option<&[&String]>,
     ) -> Result<Box<Query>, QueryBuilderError> {
         let selection_columns_expressions =
@@ -1157,8 +1113,8 @@ impl<'request> QueryBuilder<'request> {
 
         let aggregate_columns_expressions =
             aggregates.iter().filter_map(|(alias, agg)| match agg {
-                query_request::Aggregate::ColumnCount { column, .. }
-                | query_request::Aggregate::SingleColumn { column, .. } => {
+                gdc_rust_types::Aggregate::ColumnCount { column, .. }
+                | gdc_rust_types::Aggregate::SingleColumn { column, .. } => {
                     Some(SelectItem::ExprWithAlias {
                         expr: Expr::CompoundIdentifier(vec![
                             Ident::quoted("_origin"),
@@ -1167,7 +1123,7 @@ impl<'request> QueryBuilder<'request> {
                         alias: Ident::quoted(format!("_projection.{alias}")),
                     })
                 }
-                query_request::Aggregate::StarCount => None,
+                gdc_rust_types::Aggregate::StarCount {} => None,
             });
 
         let aggregate_foreach_column_expressions = match foreach_columns {
@@ -1202,7 +1158,7 @@ impl<'request> QueryBuilder<'request> {
             aggregate_projection
         };
 
-        let (aggregate_selection, exists_joins) = match &query.selection {
+        let (aggregate_selection, exists_joins) = match &query.r#where {
             Some(expression) => {
                 let mut exists_index = 0;
                 let (expr, joins) = self.selection_expression(
@@ -1244,8 +1200,8 @@ impl<'request> QueryBuilder<'request> {
     }
     fn order_by_expressions_joins(
         &mut self,
-        table: &query_request::TableName,
-        order_by: &Option<query_request::OrderBy>,
+        table: &gdc_rust_types::TableName,
+        order_by: &Option<gdc_rust_types::OrderBy>,
     ) -> Result<(Vec<OrderByExpr>, Vec<Join>), QueryBuilderError> {
         match order_by {
             None => Ok((vec![], vec![])),
@@ -1264,18 +1220,34 @@ impl<'request> QueryBuilder<'request> {
                             format!("_ord.{}", element.target_path.join("."))
                         };
                         let column_alias = match &element.target {
-                            query_request::OrderByTarget::StarCountAggregate => {
+                            gdc_rust_types::OrderByTarget::StarCountAggregate {} => {
                                 "_count".to_string()
                             }
-                            query_request::OrderByTarget::SingleColumnAggregate {
+                            gdc_rust_types::OrderByTarget::SingleColumnAggregate {
                                 column,
                                 function,
                                 result_type: _,
                             } => {
-                                format!("_agg.{}.{}", function_name(function), column)
+                                let function =
+                                    schema::SingleColumnAggregateFunction::from_str(function)
+                                        .map_err(|_| {
+                                            QueryBuilderError::UnknownSingleColumnAggregateFunction(
+                                                function.to_owned(),
+                                            )
+                                        })?;
+                                format!("_agg.{}.{}", function_name(&function), column)
                             }
 
-                            query_request::OrderByTarget::Column { column } => {
+                            gdc_rust_types::OrderByTarget::Column { column } => {
+                                let column = match column {
+                                    gdc_rust_types::ColumnSelector::Compound(name) => {
+                                        return Err(QueryBuilderError::Internal(format!(
+                                            "Compound column selector not supported: {}",
+                                            name.join(".")
+                                        )))
+                                    }
+                                    gdc_rust_types::ColumnSelector::Name(name) => name,
+                                };
                                 if element.target_path.is_empty() {
                                     column.to_owned()
                                 } else {
@@ -1286,7 +1258,7 @@ impl<'request> QueryBuilder<'request> {
 
                         self.order_by_expr(&table_alias, &column_alias, element)
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 Ok((order_by, order_by_joins))
             }
@@ -1296,21 +1268,23 @@ impl<'request> QueryBuilder<'request> {
         &mut self,
         table_alias: &str,
         column_alias: &str,
-        order_by_element: &query_request::OrderByElement,
-    ) -> OrderByExpr {
+        order_by_element: &gdc_rust_types::OrderByElement,
+    ) -> Result<OrderByExpr, QueryBuilderError> {
         let column = Expr::CompoundIdentifier(vec![
             Ident::quoted(table_alias),
             Ident::quoted(column_alias),
         ]);
         let expr = match &order_by_element.target {
             // default to sorting on 0 for count(*)
-            query_request::OrderByTarget::StarCountAggregate => sql_function(
+            gdc_rust_types::OrderByTarget::StarCountAggregate {} => sql_function(
                 "COALESCE",
                 vec![column, Expr::Value(Value::Number("0".to_owned()))],
             ),
             // sort on default value for aggregates
-            query_request::OrderByTarget::SingleColumnAggregate { result_type, .. } => {
-                use query_request::ScalarType as ST;
+            gdc_rust_types::OrderByTarget::SingleColumnAggregate { result_type, .. } => {
+                let result_type = schema::ScalarType::from_str(result_type)
+                    .map_err(|_| QueryBuilderError::UnknownScalarType(result_type.to_owned()))?;
+                use schema::ScalarType as ST;
                 let default_sorting_value = match result_type {
                     ST::Bool => Value::Null,
                     ST::String | ST::FixedString => Value::SingleQuotedString("".to_owned()),
@@ -1405,26 +1379,26 @@ impl<'request> QueryBuilder<'request> {
                 };
                 sql_function("COALESCE", vec![column, Expr::Value(default_sorting_value)])
             }
-            query_request::OrderByTarget::Column { .. } => column,
+            gdc_rust_types::OrderByTarget::Column { .. } => column,
         };
-        OrderByExpr {
+        Ok(OrderByExpr {
             expr,
             asc: Some(match order_by_element.order_direction {
-                query_request::OrderDirection::Asc => true,
-                query_request::OrderDirection::Desc => false,
+                gdc_rust_types::OrderDirection::Asc => true,
+                gdc_rust_types::OrderDirection::Desc => false,
             }),
             nulls_first: Some(match order_by_element.order_direction {
-                query_request::OrderDirection::Asc => false,
-                query_request::OrderDirection::Desc => true,
+                gdc_rust_types::OrderDirection::Asc => false,
+                gdc_rust_types::OrderDirection::Desc => true,
             }),
-        }
+        })
     }
     fn order_by_joins(
         &mut self,
-        table: &query_request::TableName,
+        table: &gdc_rust_types::TableName,
         source_path: &Vec<String>,
-        relations: &IndexMap<String, query_request::OrderByRelation>,
-        order_by: &query_request::OrderBy,
+        relations: &IndexMap<String, gdc_rust_types::OrderByRelation>,
+        order_by: &gdc_rust_types::OrderBy,
     ) -> Result<(Vec<String>, Vec<Join>), QueryBuilderError> {
         let mut joins = vec![];
         let mut parent_join_columns = vec![];
@@ -1435,11 +1409,9 @@ impl<'request> QueryBuilder<'request> {
         };
         for (relationship_name, order_by_relation) in relations {
             let relationship = self.table_relationship(table, relationship_name)?;
-            let column_mappings = get_relationship_column_mapping(relationship);
-            let relationship_table = get_relationship_target_table(relationship)?;
 
             // parent table will need to expose these columns for this table to join on
-            for column in column_mappings.keys() {
+            for column in relationship.column_mapping.keys() {
                 if !parent_join_columns.contains(column) {
                     parent_join_columns.push(column.clone());
                 }
@@ -1447,6 +1419,8 @@ impl<'request> QueryBuilder<'request> {
 
             let child_path = [&source_path[..], &[relationship_name.to_owned()]].concat();
             let child_alias = format!("_ord.{}", child_path.join("."));
+
+            let relationship_table = get_target_table(&relationship.target)?;
 
             // child columns will be used by subsequent joins to join to this table
             let (child_columns, child_joins) = self.order_by_joins(
@@ -1463,18 +1437,40 @@ impl<'request> QueryBuilder<'request> {
                 if element.target_path == child_path {
                     // add the column to the projection
                     let col_alias = match &element.target {
-                        query_request::OrderByTarget::StarCountAggregate => "_count".to_string(),
-                        query_request::OrderByTarget::SingleColumnAggregate {
+                        gdc_rust_types::OrderByTarget::StarCountAggregate {} => {
+                            "_count".to_string()
+                        }
+                        gdc_rust_types::OrderByTarget::SingleColumnAggregate {
                             column,
                             function,
                             result_type: _,
-                        } => format!("_agg.{}.{}", function_name(function), column),
-                        query_request::OrderByTarget::Column { column } => {
+                        } => {
+                            let function = schema::SingleColumnAggregateFunction::from_str(
+                                function,
+                            )
+                            .map_err(|_| {
+                                QueryBuilderError::UnknownSingleColumnAggregateFunction(
+                                    function.to_owned(),
+                                )
+                            })?;
+                            format!("_agg.{}.{}", function_name(&function), column)
+                        }
+
+                        gdc_rust_types::OrderByTarget::Column { column } => {
+                            let column = match column {
+                                gdc_rust_types::ColumnSelector::Compound(name) => {
+                                    return Err(QueryBuilderError::Internal(format!(
+                                        "Compound column selector not supported: {}",
+                                        name.join(".")
+                                    )))
+                                }
+                                gdc_rust_types::ColumnSelector::Name(name) => name,
+                            };
                             format!("_col.{column}")
                         }
                     };
                     let projection_expr = match &element.target {
-                        query_request::OrderByTarget::StarCountAggregate => {
+                        gdc_rust_types::OrderByTarget::StarCountAggregate {} => {
                             Expr::Function(Function {
                                 name: ObjectName(vec![Ident::unquoted("COUNT")]),
                                 args: vec![FunctionArgExpr::Wildcard],
@@ -1482,15 +1478,32 @@ impl<'request> QueryBuilder<'request> {
                                 distinct: false,
                             })
                         }
-                        query_request::OrderByTarget::SingleColumnAggregate {
+                        gdc_rust_types::OrderByTarget::SingleColumnAggregate {
                             column,
                             function,
                             result_type: _,
                         } => {
                             let column_expr = Expr::Identifier(Ident::quoted(column));
-                            single_column_aggregate(function, column_expr)
+                            let function = schema::SingleColumnAggregateFunction::from_str(
+                                function,
+                            )
+                            .map_err(|_| {
+                                QueryBuilderError::UnknownSingleColumnAggregateFunction(
+                                    function.to_owned(),
+                                )
+                            })?;
+                            single_column_aggregate(&function, column_expr)
                         }
-                        query_request::OrderByTarget::Column { column } => {
+                        gdc_rust_types::OrderByTarget::Column { column } => {
+                            let column = match column {
+                                gdc_rust_types::ColumnSelector::Compound(name) => {
+                                    return Err(QueryBuilderError::Internal(format!(
+                                        "Compound column selector not supported: {}",
+                                        name.join(".")
+                                    )))
+                                }
+                                gdc_rust_types::ColumnSelector::Name(name) => name,
+                            };
                             Expr::Identifier(Ident::quoted(column))
                         }
                     };
@@ -1500,7 +1513,16 @@ impl<'request> QueryBuilder<'request> {
                     };
                     projection_cols.insert(col_alias, projection_col);
                     // add the column to the group by clause, if it's not an aggregate
-                    if let query_request::OrderByTarget::Column { column } = &element.target {
+                    if let gdc_rust_types::OrderByTarget::Column { column } = &element.target {
+                        let column = match column {
+                            gdc_rust_types::ColumnSelector::Compound(name) => {
+                                return Err(QueryBuilderError::Internal(format!(
+                                    "Compound column selector not supported: {}",
+                                    name.join(".")
+                                )))
+                            }
+                            gdc_rust_types::ColumnSelector::Name(name) => name,
+                        };
                         let group_by_col = Expr::Identifier(Ident::quoted(column));
                         group_by_cols.insert(column, group_by_col);
                     }
@@ -1508,7 +1530,7 @@ impl<'request> QueryBuilder<'request> {
             }
 
             // add columns needed joining to the parent table to the projection and group by, if not duplicates
-            for column in column_mappings.values() {
+            for column in relationship.column_mapping.values() {
                 let col_alias = format!("_col.{column}");
                 if !projection_cols.contains_key(&col_alias) {
                     let projection_col = SelectItem::ExprWithAlias {
@@ -1538,7 +1560,7 @@ impl<'request> QueryBuilder<'request> {
                 }
             }
 
-            let (join_selection, exists_joins) = match &order_by_relation.selection {
+            let (join_selection, exists_joins) = match &order_by_relation.r#where {
                 Some(expression) => {
                     let mut exists_index = 0;
                     let (expr, joins) = self.selection_expression(
@@ -1558,7 +1580,7 @@ impl<'request> QueryBuilder<'request> {
             let join_from = vec![TableWithJoins {
                 relation: TableFactor::Table {
                     name: ObjectName(
-                        get_relationship_target_table(relationship)?
+                        get_target_table(&relationship.target)?
                             .iter()
                             .map(Ident::quoted)
                             .collect(),
@@ -1581,7 +1603,8 @@ impl<'request> QueryBuilder<'request> {
                     alias: Some(Ident::quoted(&child_alias)),
                 },
                 join_operator: JoinOperator::LeftOuter(JoinConstraint::On(
-                    column_mappings
+                    relationship
+                        .column_mapping
                         .iter()
                         .map(|(source_col, target_col)| Expr::BinaryOp {
                             left: Box::new(Expr::CompoundIdentifier(vec![
@@ -1610,14 +1633,14 @@ impl<'request> QueryBuilder<'request> {
     }
     fn selection_expression(
         &mut self,
-        expression: &query_request::Expression,
+        expression: &gdc_rust_types::Expression,
         exists_index: &mut usize,
         origin: bool,
         table_alias: &str,
-        table: &query_request::TableName,
+        table: &gdc_rust_types::TableName,
     ) -> Result<(Expr, Vec<Join>), QueryBuilderError> {
         match expression {
-            query_request::Expression::And { expressions } => {
+            gdc_rust_types::Expression::And { expressions } => {
                 let exprs = expressions
                     .iter()
                     .map(|expression| {
@@ -1650,7 +1673,7 @@ impl<'request> QueryBuilder<'request> {
 
                 Ok(and_expr)
             }
-            query_request::Expression::Or { expressions } => {
+            gdc_rust_types::Expression::Or { expressions } => {
                 let exprs = expressions
                     .iter()
                     .map(|expression| {
@@ -1684,7 +1707,7 @@ impl<'request> QueryBuilder<'request> {
                 Ok(or_expr)
             }
 
-            query_request::Expression::Not { expression } => {
+            gdc_rust_types::Expression::Not { expression } => {
                 let (expr, joins) = self.selection_expression(
                     expression,
                     exists_index,
@@ -1698,14 +1721,21 @@ impl<'request> QueryBuilder<'request> {
                 };
                 Ok((expr, joins))
             }
-            query_request::Expression::UnaryComparisonOperator { column, operator } => {
+            gdc_rust_types::Expression::ApplyUnaryComparison { column, operator } => {
                 let expr = Box::new(self.comparison_column(table_alias, column)?);
                 let expr = match operator {
-                    query_request::UnaryComparisonOperator::IsNull => Expr::IsNull(expr),
+                    gdc_rust_types::UnaryComparisonOperator::IsNull => {
+                        Expr::IsNull(Box::new(Expr::Nested(expr)))
+                    }
+                    gdc_rust_types::UnaryComparisonOperator::Other(operator) => {
+                        return Err(QueryBuilderError::UnknownUnaryComparisonOperator(
+                            operator.to_owned(),
+                        ))
+                    }
                 };
                 Ok((expr, vec![]))
             }
-            query_request::Expression::BinaryComparisonOperator {
+            gdc_rust_types::Expression::ApplyBinaryComparison {
                 column,
                 operator,
                 value,
@@ -1713,42 +1743,59 @@ impl<'request> QueryBuilder<'request> {
                 let left = Box::new(self.comparison_column(table_alias, column)?);
 
                 let right = match value {
-                    query_request::ComparisonValue::ScalarValueComparison { value, value_type } => {
+                    gdc_rust_types::ComparisonValue::Scalar { value, value_type } => {
+                        let value_type =
+                            schema::ScalarType::from_str(value_type).map_err(|err| {
+                                QueryBuilderError::UnknownScalarType(value_type.to_owned())
+                            })?;
                         Box::new(self.bind_parameter(BoundParam::Value {
                             value: value.to_owned(),
                             value_type: value_type.to_owned(),
                         }))
                     }
-                    query_request::ComparisonValue::AnotherColumnComparison { column } => {
+                    gdc_rust_types::ComparisonValue::Column { column } => {
                         // technically, we could support column comparisons, but only if they don't cross relationships
                         // we can check the origin flag for this, to validate we're not traversing a relationship.
+                        let name = match &column.name {
+                            gdc_rust_types::ColumnSelector::Compound(name) => name.join("."),
+                            gdc_rust_types::ColumnSelector::Name(name) => name.to_owned(),
+                        };
                         return Err(QueryBuilderError::RightHandColumnComparisonNotSupported(
-                            column.name.to_owned(),
+                            name,
                         ));
                     }
                 };
 
-                let expr = Expr::BinaryOp {
-                    left,
-                    right,
-                    op: match operator {
-                        BinaryComparisonOperator::LessThan => BinaryOperator::Lt,
-                        BinaryComparisonOperator::LessThanOrEqual => BinaryOperator::LtEq,
-                        BinaryComparisonOperator::Equal => BinaryOperator::Eq,
-                        BinaryComparisonOperator::GreaterThan => BinaryOperator::Gt,
-                        BinaryComparisonOperator::GreaterThanOrEqual => BinaryOperator::GtEq,
-                    },
+                let op = match operator {
+                    gdc_rust_types::BinaryComparisonOperator::LessThan => BinaryOperator::Lt,
+                    gdc_rust_types::BinaryComparisonOperator::LessThanOrEqual => {
+                        BinaryOperator::LtEq
+                    }
+                    gdc_rust_types::BinaryComparisonOperator::Equal => BinaryOperator::Eq,
+                    gdc_rust_types::BinaryComparisonOperator::GreaterThan => BinaryOperator::Gt,
+                    gdc_rust_types::BinaryComparisonOperator::GreaterThanOrEqual => {
+                        BinaryOperator::GtEq
+                    }
+                    gdc_rust_types::BinaryComparisonOperator::Other(operator) => {
+                        return Err(QueryBuilderError::UnknownBinaryComparisonOperator(
+                            operator.to_owned(),
+                        ))
+                    }
                 };
+
+                let expr = Expr::BinaryOp { left, right, op };
 
                 Ok((expr, vec![]))
             }
-            query_request::Expression::BinaryArrayComparisonOperator {
+            gdc_rust_types::Expression::ApplyBinaryArrayComparison {
                 column,
                 operator,
                 value_type,
                 values,
             } => {
                 let expr = Box::new(self.comparison_column(table_alias, column)?);
+                let value_type = schema::ScalarType::from_str(value_type)
+                    .map_err(|_err| QueryBuilderError::UnknownScalarType(value_type.to_owned()))?;
                 let list = values
                     .iter()
                     .map(|value| {
@@ -1760,14 +1807,20 @@ impl<'request> QueryBuilder<'request> {
                     .collect();
 
                 let expr = match operator {
-                    query_request::BinaryArrayComparisonOperator::In => Expr::InList { expr, list },
+                    gdc_rust_types::BinaryArrayComparisonOperator::In => {
+                        Expr::InList { expr, list }
+                    }
+                    gdc_rust_types::BinaryArrayComparisonOperator::Other(operator) => {
+                        return Err(QueryBuilderError::UnknownBinaryArrayComparisonOperator(
+                            operator.to_owned(),
+                        ))
+                    }
                 };
                 Ok((expr, vec![]))
             }
-            query_request::Expression::Exists {
-                in_table,
-                selection,
-            } => {
+            gdc_rust_types::Expression::Exists { in_table, r#where } => {
+                // this should be marked as unused if all is fine.
+                let selection: bool;
                 if origin {
                     let join_alias = format!("_exists_{}", exists_index);
                     *exists_index += 1;
@@ -1776,7 +1829,7 @@ impl<'request> QueryBuilder<'request> {
                     // this may not be true if we support column comparison operators.
                     let (select_expr, join_expr, table_name, projection, group_by, limit) =
                         match in_table {
-                            query_request::ExistsInTable::UnrelatedTable { table } => {
+                            gdc_rust_types::ExistsInTable::Unrelated { table } => {
                                 let left = Expr::CompoundIdentifier(vec![
                                     Ident::quoted(join_alias.clone()), // note: this is the alias of the join. Should be dynamic
                                     Ident::quoted("_exists"),
@@ -1806,13 +1859,13 @@ impl<'request> QueryBuilder<'request> {
                                     limit,
                                 )
                             }
-                            query_request::ExistsInTable::RelatedTable { relationship } => {
+                            gdc_rust_types::ExistsInTable::Related { relationship } => {
                                 let relationship = self.table_relationship(table, relationship)?;
-                                let column_mappings = get_relationship_column_mapping(relationship);
-                                let relationship_table =
-                                    get_relationship_target_table(relationship)?;
+                                let column_mappings: bool;
+                                let relationship_table: bool;
 
-                                let select_expr = column_mappings
+                                let select_expr = relationship
+                                    .column_mapping
                                     .iter()
                                     .map(|(source_col, target_col)| {
                                         let left = Expr::CompoundIdentifier(vec![
@@ -1840,7 +1893,8 @@ impl<'request> QueryBuilder<'request> {
                                     .unwrap_or(Expr::Value(Value::Boolean(true)));
                                 let join_expr = select_expr.clone();
 
-                                let projection = column_mappings
+                                let projection = relationship
+                                    .column_mapping
                                     .iter()
                                     .map(|(_, target_col)| SelectItem::ExprWithAlias {
                                         expr: Expr::CompoundIdentifier(vec![
@@ -1850,7 +1904,8 @@ impl<'request> QueryBuilder<'request> {
                                         alias: Ident::quoted(target_col),
                                     })
                                     .collect();
-                                let group_by = column_mappings
+                                let group_by = relationship
+                                    .column_mapping
                                     .iter()
                                     .map(|(_, target_col)| {
                                         Expr::CompoundIdentifier(vec![
@@ -1860,6 +1915,22 @@ impl<'request> QueryBuilder<'request> {
                                     })
                                     .collect();
                                 let limit = None;
+
+                                let relationship_table = match &relationship.target {
+                                    gdc_rust_types::Target::Table { name } => name,
+                                    gdc_rust_types::Target::Interpolated { id } => {
+                                        return Err(QueryBuilderError::Internal(
+                                            "Relationships to Interpolated tables not supported"
+                                                .to_string(),
+                                        ))
+                                    }
+                                    gdc_rust_types::Target::Function { name, arguments } => {
+                                        return Err(QueryBuilderError::Internal(
+                                            "Relationships to Function tables not supported"
+                                                .to_string(),
+                                        ))
+                                    }
+                                };
 
                                 (
                                     select_expr,
@@ -1875,7 +1946,7 @@ impl<'request> QueryBuilder<'request> {
                     let mut subquery_exists_index = 0;
 
                     let (selection, joins) = self.selection_expression(
-                        selection,
+                        r#where,
                         &mut subquery_exists_index,
                         false,
                         &join_alias,
@@ -1911,7 +1982,7 @@ impl<'request> QueryBuilder<'request> {
                     *exists_index += 1;
 
                     let (select_expr, join_expr, table_name) = match in_table {
-                        query_request::ExistsInTable::UnrelatedTable { table } => {
+                        gdc_rust_types::ExistsInTable::Unrelated { table } => {
                             let left = Expr::CompoundIdentifier(vec![
                                 Ident::quoted(join_alias.clone()), // note: this is the alias of the join. Should be dynamic
                                 Ident::quoted("_exists"),
@@ -1928,12 +1999,11 @@ impl<'request> QueryBuilder<'request> {
                             let table_name = table;
                             (select_expr, join_expr, table_name)
                         }
-                        query_request::ExistsInTable::RelatedTable { relationship } => {
+                        gdc_rust_types::ExistsInTable::Related { relationship } => {
                             let relationship = self.table_relationship(table, relationship)?;
-                            let column_mappings = get_relationship_column_mapping(relationship);
-                            let relationship_table = get_relationship_target_table(relationship)?;
 
-                            let select_expr = column_mappings
+                            let select_expr = relationship
+                                .column_mapping
                                 .iter()
                                 .map(|(source_col, target_col)| {
                                     let left = Expr::CompoundIdentifier(vec![
@@ -1961,12 +2031,14 @@ impl<'request> QueryBuilder<'request> {
                                 .unwrap_or(Expr::Value(Value::Boolean(true)));
                             let join_expr = select_expr.clone();
 
+                            let relationship_table = get_target_table(&relationship.target)?;
+
                             (select_expr, join_expr, relationship_table)
                         }
                     };
 
                     let (selection, joins) = self.selection_expression(
-                        selection,
+                        r#where,
                         exists_index,
                         false,
                         &join_alias,
@@ -1997,7 +2069,7 @@ impl<'request> QueryBuilder<'request> {
     fn comparison_column(
         &mut self,
         table_alias: &str,
-        column: &query_request::ComparisonColumn,
+        column: &gdc_rust_types::ComparisonColumn,
     ) -> Result<Expr, QueryBuilderError> {
         if let Some(path) = &column.path {
             if !path.is_empty() {
@@ -2007,10 +2079,17 @@ impl<'request> QueryBuilder<'request> {
             }
         }
 
-        let expr = Expr::CompoundIdentifier(vec![
-            Ident::quoted(table_alias),
-            Ident::quoted(&column.name),
-        ]);
+        let column_name = match &column.name {
+            gdc_rust_types::ColumnSelector::Compound(name) => {
+                return Err(QueryBuilderError::Internal(
+                    "Compoud column selector not supported".to_string(),
+                ))
+            }
+            gdc_rust_types::ColumnSelector::Name(name) => name,
+        };
+
+        let expr =
+            Expr::CompoundIdentifier(vec![Ident::quoted(table_alias), Ident::quoted(column_name)]);
 
         Ok(expr)
     }
@@ -2050,35 +2129,27 @@ impl<'request> QueryBuilder<'request> {
     fn limit_by_limit_offset(
         &self,
         partion_rows_by: Vec<Expr>,
-        limit: &Option<serde_json::Number>,
-        offset: &Option<serde_json::Number>,
+        limit: &Option<u64>,
+        offset: &Option<u64>,
     ) -> (Option<LimitByExpr>, Option<u64>, Option<u64>) {
         if partion_rows_by.is_empty() {
-            (
-                None,
-                limit
-                    .as_ref()
-                    .map(|limit| limit.as_u64().expect("limit should be valid u64")),
-                offset
-                    .as_ref()
-                    .map(|offset| offset.as_u64().expect("offset should be valid u64")),
-            )
+            (None, limit.to_owned(), offset.to_owned())
         } else {
             let limit_by = match (limit.as_ref(), offset.as_ref()) {
                 (None, None) => None,
                 (None, Some(offset)) => Some(LimitByExpr {
                     limit: u64::MAX,
-                    offset: Some(offset.as_u64().expect("offset should be valid u64")),
+                    offset: Some(offset.to_owned()),
                     by: partion_rows_by,
                 }),
                 (Some(limit), None) => Some(LimitByExpr {
-                    limit: limit.as_u64().expect("limit should be valid u64"),
+                    limit: limit.to_owned(),
                     offset: None,
                     by: partion_rows_by,
                 }),
                 (Some(limit), Some(offset)) => Some(LimitByExpr {
-                    limit: limit.as_u64().expect("limit should be valid u64"),
-                    offset: Some(offset.as_u64().expect("offset should be valid u64")),
+                    limit: limit.to_owned(),
+                    offset: Some(offset.to_owned()),
                     by: partion_rows_by,
                 }),
             };
