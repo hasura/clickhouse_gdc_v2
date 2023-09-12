@@ -46,6 +46,7 @@ pub async fn get_capabilities() -> Json<CapabilitiesResponse> {
             raw: Some(serde_json::Value::Object(serde_json::Map::new())),
             user_defined_functions: None,
             interpolated_queries: None,
+            post_schema: Some(serde_json::Value::Object(serde_json::Map::new())),
         },
     };
     Json(capabilities)

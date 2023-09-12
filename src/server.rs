@@ -14,7 +14,6 @@ pub use config::Config;
 pub fn router() -> Router {
     Router::new()
         .route("/capabilities", get(get_capabilities))
-        .route("/schema", get(post_schema))
         .route("/schema", post(post_schema))
         .route("/query", post(post_query))
         .route("/mutation", post(post_mutation))

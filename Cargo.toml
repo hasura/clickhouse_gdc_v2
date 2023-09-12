@@ -32,5 +32,5 @@ opentelemetry = "0.19.0"
 opentelemetry-otlp = { version = "0.12.0", features = ["reqwest-client"] }
 peg = "0.8.1"
 openapiv3 = "1.0.2"
-gdc_rust_types = { git = "https://github.com/hasura/gdc_rust_types", rev = "900d969" }
+gdc_rust_types = { git = "https://github.com/hasura/gdc_rust_types", rev = "1021d5d" }
 strum = { version = "0.25.0", features = ["derive"] }

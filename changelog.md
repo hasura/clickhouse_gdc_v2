@@ -1,5 +1,11 @@
 # ChangeLog
 
+## 0.4.1
+
+- update gdc_rust_types
+- remove GET /schema endpoint
+- add post_schema capability
+
 ## 0.4.0
 
 - Added changelog :)

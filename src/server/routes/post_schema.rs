@@ -30,6 +30,36 @@ pub async fn post_schema(
     let introspection: Vec<TableIntrospection> =
         execute_query(&config, introspection_sql, &parameters).await?;
 
+    let response = get_schema_response(introspection, &config)?;
+
+    Ok(Json(response))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TableIntrospection {
+    name: String,
+    primary_key: Option<Vec<String>>,
+    table_type: Option<TableType>,
+    columns: Option<Vec<ColumnIntrospection>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ColumnIntrospection {
+    name: String,
+    column_type: String,
+    nullable: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TableArgument {
+    name: String,
+    data_type: String,
+}
+
+fn get_schema_response(
+    introspection: Vec<TableIntrospection>,
+    config: &Config,
+) -> Result<SchemaResponse, ServerError> {
     let response = SchemaResponse {
         // todo: add functions
         functions: None,
@@ -91,28 +121,7 @@ pub async fn post_schema(
             .collect::<Result<_, ServerError>>()?,
     };
 
-    Ok(Json(response))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct TableIntrospection {
-    name: String,
-    primary_key: Option<Vec<String>>,
-    table_type: Option<TableType>,
-    columns: Option<Vec<ColumnIntrospection>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ColumnIntrospection {
-    name: String,
-    column_type: String,
-    nullable: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct TableArgument {
-    name: String,
-    data_type: String,
+    Ok(response)
 }
 
 fn aliased_table_name(table_name: &str, config: &Config) -> String {
