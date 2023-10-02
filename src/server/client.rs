@@ -35,7 +35,7 @@ pub async fn execute_query<T: DeserializeOwned>(
     parameters: &Vec<(String, String)>,
 ) -> Result<Vec<T>, Box<dyn Error>> {
     let client = reqwest::Client::new();
-    let request = client
+    let response = client
         .post(&config.url)
         .header("X-ClickHouse-User", &config.username)
         .header("X-ClickHouse-Key", &config.password)
@@ -44,9 +44,11 @@ pub async fn execute_query<T: DeserializeOwned>(
         .send()
         .await?;
 
-    let response = request.text().await?;
+    if response.error_for_status_ref().is_err() {
+        return Err(response.text().await?.into());
+    }
 
-    let payload = serde_json::from_str::<ClickHouseResponse<T>>(&response)?;
+    let payload: ClickHouseResponse<T> = response.json().await?;
 
     Ok(payload.data)
 }

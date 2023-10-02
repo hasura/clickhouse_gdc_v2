@@ -1,5 +1,9 @@
 # ChangeLog
 
+## 0.4.2
+
+- Improve error handling requests to clickhouse db
+
 ## 0.4.1
 
 - update gdc_rust_types
