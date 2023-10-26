@@ -1,26 +1,73 @@
-FROM lukemathwalker/cargo-chef:0.1.62-rust-1.71-slim-bookworm as chef
+####################################################################################################
+## Builder
+####################################################################################################
+FROM rust:1.73-alpine3.18 AS builder
+
+ARG TARGETPLATFORM
+
+# Rustup toolchains are installed in RUSTUP_HOME which is /usr/local/rustup
+# Not sure why this flag is needed at the moment, but workaround was found here:
+# https://github.com/rust-lang/rustup/issues/3324#issuecomment-1691419850
+RUN if [ ! -d ./.cargo ]; then mkdir ./.cargo; fi
+RUN echo -e '[target.aarch64-unknown-linux-musl]\nrustflags = ["-C", "link-arg=/usr/local/rustup/toolchains/1.73.0-aarch64-unknown-linux-musl/lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained/libc.a"]' >> ./.cargo/config.toml
+
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+    rustup target add aarch64-unknown-linux-musl; \
+    else \
+    rustup target add x86_64-unknown-linux-musl; \
+    fi
+
+RUN set -x && \
+    apk add --no-cache musl-dev openssl-dev openssl-libs-static
+
+ENV OPENSSL_STATIC=1
+
+# Create appuser
+ENV USER=hasura
+ENV UID=10001
+
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid "${UID}" \
+    "${USER}"
+
 WORKDIR /app
 
-FROM chef AS planner
-COPY ./Cargo.toml ./
-COPY ./Cargo.lock ./
-COPY ./src ./src
-RUN cargo chef prepare --recipe-path recipe.json
+COPY ./ ./
 
-FROM chef AS builder
-RUN apt-get update
-RUN apt-get install -y libssl-dev pkg-config
-COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-COPY ./Cargo.toml ./
-COPY ./Cargo.lock ./
-COPY ./src ./src
-RUN cargo build --release --locked
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+    set -x && cargo build --target aarch64-unknown-linux-musl --release; \
+    else \
+    set -x && cargo build --target x86_64-unknown-linux-musl --release; \
+    fi
 
-FROM debian:bookworm-slim
-RUN apt-get update
-RUN apt-get install -y libssl-dev pkg-config
-COPY ./LICENSE /
-COPY --from=builder /app/target/release/clickhouse_gdc /
-ENTRYPOINT [ "/clickhouse_gdc" ]
+# Because we can't use if else on the architecture to COPY below we move the binary.
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+    mv /app/target/aarch64-unknown-linux-musl/release/clickhouse_gdc /app/target/clickhouse_gdc; \
+    else \
+    mv /app/target/x86_64-unknown-linux-musl/release/clickhouse_gdc /app/target/clickhouse_gdc; \
+    fi
 
+####################################################################################################
+## Final image
+####################################################################################################
+FROM scratch
+
+# Import from builder.
+COPY --from=builder /etc/passwd /etc/passwd
+COPY --from=builder /etc/group /etc/group
+
+WORKDIR /app
+
+# Copy our build
+COPY --from=builder /app/target/clickhouse_gdc ./
+COPY ./LICENSE ./
+
+# Use an unprivileged user.
+USER hasura:hasura
+
+CMD ["/app/clickhouse_gdc"]
