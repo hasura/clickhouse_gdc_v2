@@ -1,5 +1,0 @@
-# Rustup toolchains are installed in RUSTUP_HOME which is /usr/local/rustup
-# Not sure why this flag is needed at the moment, but workaround was found here:
-# https://github.com/rust-lang/rustup/issues/3324#issuecomment-1691419850
-[target.aarch64-unknown-linux-musl]
-rustflags = ["-C", "link-arg=/usr/local/rustup/toolchains/1.73.0-aarch64-unknown-linux-musl/lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained/libc.a"]
