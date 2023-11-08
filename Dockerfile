@@ -55,11 +55,12 @@ RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
 ####################################################################################################
 ## Final image
 ####################################################################################################
-FROM scratch
+FROM alpine:latest
 
 # Import from builder.
 COPY --from=builder /etc/passwd /etc/passwd
 COPY --from=builder /etc/group /etc/group
+RUN apk add curl
 
 WORKDIR /app
 
