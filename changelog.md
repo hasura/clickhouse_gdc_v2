@@ -1,5 +1,10 @@
 # ChangeLog
 
+## 2.35.0
+
+- Update docker build process to produce small, alpine-based images
+- update version number to match HGE version. Going forward will try to keep major and minor version in sync. Patch version will be independent.
+
 ## 0.4.2
 
 - Improve error handling requests to clickhouse db
