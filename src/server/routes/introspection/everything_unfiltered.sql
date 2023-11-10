@@ -1,43 +1,36 @@
 SELECT
-    t.table_name AS "name",
-    sc.primary_key AS "primary_key",
-    toString(
-        cast(
-            t.table_type,
-            'Enum(\'table\' = 1, \'view\' = 2)'
-        )
-    ) AS "table_type",
+    tables.table_name AS "name",
+    system_columns.primary_key AS "primary_key",
+    tables.table_type AS "table_type",
     cast(
-        C .columns,
+        columns.columns,
         'Array(Tuple(name String, column_type String, nullable Bool))'
     ) AS "columns"
-FROM INFORMATION_SCHEMA.TABLES AS t
+FROM INFORMATION_SCHEMA.TABLES AS tables
 LEFT JOIN (
-    SELECT C .table_catalog,
-        C .table_schema,
-        C .table_name,
+    SELECT columns.table_catalog,
+        columns.table_schema,
+        columns.table_name,
         groupArray(
             tuple(
-                C .column_name,
-                C .data_type,
-                toBool(C .is_nullable)
+                columns.column_name,
+                columns.data_type,
+                toBool(columns.is_nullable)
             )
         ) AS "columns"
-    FROM INFORMATION_SCHEMA.COLUMNS AS C
-    GROUP BY C .table_catalog,
-        C .table_schema,
-        C .table_name
-) AS C USING (table_catalog, table_schema, table_name)
+    FROM INFORMATION_SCHEMA.COLUMNS AS columns
+    GROUP BY columns.table_catalog,
+        columns.table_schema,
+        columns.table_name
+) AS columns USING (table_catalog, table_schema, table_name)
 LEFT JOIN (
-    SELECT sc.database,
-        sc.table,
-        groupArray(sc.name) AS "primary_key"
-    FROM system.columns sc
-    WHERE sc.is_in_primary_key = 1
-    GROUP BY sc.database,
-        sc.table
-) AS sc ON sc.database = t.table_schema
-AND sc.table = t.table_name
-WHERE t.table_catalog = currentDatabase()
-AND t.table_type IN (1, 2) -- table type is an enum, where tables and views are 1 and 2 respectively
+    SELECT system_columns.database,
+        system_columns.table,
+        groupArray(system_columns.name) AS "primary_key"
+    FROM system.columns AS system_columns
+    WHERE system_columns.is_in_primary_key = 1
+    GROUP BY system_columns.database, system_columns.table
+) AS system_columns ON system_columns.database = tables.table_schema
+AND system_columns.table = tables.table_name
+WHERE tables.table_catalog = currentDatabase()
 FORMAT JSON;

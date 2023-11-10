@@ -36,10 +36,18 @@ pub async fn post_schema(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+enum IntrospectionTableType {
+    #[serde(rename = "BASE TABLE")]
+    BaseTable,
+    #[serde(rename = "VIEW")]
+    View,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct TableIntrospection {
     name: String,
     primary_key: Option<Vec<String>>,
-    table_type: Option<TableType>,
+    table_type: Option<IntrospectionTableType>,
     columns: Option<Vec<ColumnIntrospection>>,
 }
 
@@ -91,7 +99,7 @@ fn get_schema_response(
                                     .unwrap_or(ScalarType::Unknown);
 
                                 Ok(ColumnInfo {
-                                    name: aliased_column_name(&table_name, &column_name, &config),
+                                    name: aliased_column_name(&table_name, &column_name, config),
                                     description: None,
                                     nullable,
                                     insertable: None,
@@ -107,9 +115,12 @@ fn get_schema_response(
                 };
 
                 Ok(TableInfo {
-                    name: vec![aliased_table_name(&table_name, &config)],
+                    name: vec![aliased_table_name(&table_name, config)],
                     description: None,
-                    r#type: table_type,
+                    r#type: table_type.map(|table_type| match table_type {
+                        IntrospectionTableType::BaseTable => TableType::Table,
+                        IntrospectionTableType::View => TableType::View,
+                    }),
                     primary_key,
                     foreign_keys: None,
                     insertable: None,
