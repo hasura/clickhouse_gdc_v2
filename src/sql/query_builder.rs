@@ -185,7 +185,7 @@ fn aggregates_object_type(
 /// we always wrap the type name in Nullable() as we don't know if the underlying column is nulable or not
 fn type_cast_string(scalar_type: &gdc_rust_types::ScalarType) -> Result<String, QueryBuilderError> {
     let scalar_type = schema::ScalarType::from_str(scalar_type)
-        .map_err(|err| QueryBuilderError::UnknownScalarType(scalar_type.to_owned()))?;
+        .map_err(|_err| QueryBuilderError::UnknownScalarType(scalar_type.to_owned()))?;
     use schema::ScalarType as ST;
     Ok(match scalar_type {
         ST::Bool => "Nullable(Bool)",
@@ -303,10 +303,10 @@ fn get_target_table(
 ) -> Result<&gdc_rust_types::TableName, QueryBuilderError> {
     match target {
         gdc_rust_types::Target::Table { name } => Ok(name),
-        gdc_rust_types::Target::Interpolated { id } => Err(QueryBuilderError::Internal(
+        gdc_rust_types::Target::Interpolated { .. } => Err(QueryBuilderError::Internal(
             "Interpolated targets not supported".to_string(),
         )),
-        gdc_rust_types::Target::Function { name, arguments } => Err(QueryBuilderError::Internal(
+        gdc_rust_types::Target::Function { .. } => Err(QueryBuilderError::Internal(
             "Function targets not yet supported".to_string(),
         )),
     }
@@ -1745,7 +1745,7 @@ impl<'request> QueryBuilder<'request> {
                 let right = match value {
                     gdc_rust_types::ComparisonValue::Scalar { value, value_type } => {
                         let value_type =
-                            schema::ScalarType::from_str(value_type).map_err(|err| {
+                            schema::ScalarType::from_str(value_type).map_err(|_err| {
                                 QueryBuilderError::UnknownScalarType(value_type.to_owned())
                             })?;
                         Box::new(self.bind_parameter(BoundParam::Value {
@@ -1819,8 +1819,6 @@ impl<'request> QueryBuilder<'request> {
                 Ok((expr, vec![]))
             }
             gdc_rust_types::Expression::Exists { in_table, r#where } => {
-                // this should be marked as unused if all is fine.
-                let selection: bool;
                 if origin {
                     let join_alias = format!("_exists_{}", exists_index);
                     *exists_index += 1;
@@ -1861,8 +1859,6 @@ impl<'request> QueryBuilder<'request> {
                             }
                             gdc_rust_types::ExistsInTable::Related { relationship } => {
                                 let relationship = self.table_relationship(table, relationship)?;
-                                let column_mappings: bool;
-                                let relationship_table: bool;
 
                                 let select_expr = relationship
                                     .column_mapping
@@ -1918,13 +1914,13 @@ impl<'request> QueryBuilder<'request> {
 
                                 let relationship_table = match &relationship.target {
                                     gdc_rust_types::Target::Table { name } => name,
-                                    gdc_rust_types::Target::Interpolated { id } => {
+                                    gdc_rust_types::Target::Interpolated { .. } => {
                                         return Err(QueryBuilderError::Internal(
                                             "Relationships to Interpolated tables not supported"
                                                 .to_string(),
                                         ))
                                     }
-                                    gdc_rust_types::Target::Function { name, arguments } => {
+                                    gdc_rust_types::Target::Function { .. } => {
                                         return Err(QueryBuilderError::Internal(
                                             "Relationships to Function tables not supported"
                                                 .to_string(),
@@ -2080,7 +2076,7 @@ impl<'request> QueryBuilder<'request> {
         }
 
         let column_name = match &column.name {
-            gdc_rust_types::ColumnSelector::Compound(name) => {
+            gdc_rust_types::ColumnSelector::Compound(_name) => {
                 return Err(QueryBuilderError::Internal(
                     "Compoud column selector not supported".to_string(),
                 ))
