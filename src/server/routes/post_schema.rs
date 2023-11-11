@@ -13,7 +13,7 @@ use crate::server::{
     config::{SourceConfig, SourceName},
     error::ServerError,
     schema::{
-        clickhouse_data_type::{ClickhouseDataType, Identifier, SingleQuotedString},
+        clickhouse_data_type::{ClickhouseDataType, Identifier},
         ScalarType,
     },
     Config,

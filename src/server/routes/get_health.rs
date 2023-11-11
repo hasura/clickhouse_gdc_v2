@@ -1,7 +1,4 @@
-use axum::{
-    http::{header, StatusCode},
-    response::IntoResponse,
-};
+use axum::{http::StatusCode, response::IntoResponse};
 
 use crate::server::config::{SourceConfig, SourceName};
 
