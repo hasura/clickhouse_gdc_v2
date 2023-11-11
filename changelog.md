@@ -1,5 +1,11 @@
 # ChangeLog
 
+## 2.35.1
+
+- fix introspection
+- implement database healthchecks
+- cleanup to reduce compile time warnings
+
 ## 2.35.0
 
 - Update docker build process to produce small, alpine-based images
