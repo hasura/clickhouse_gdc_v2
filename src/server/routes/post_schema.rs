@@ -9,7 +9,7 @@ use gdc_rust_types::{
 use serde::{Deserialize, Serialize};
 
 use crate::server::{
-    client::execute_query,
+    client::{execute_query, ClickhouseParameters},
     config::{SourceConfig, SourceName},
     error::ServerError,
     schema::{
@@ -352,7 +352,7 @@ fn get_scalar_type(data_type: &ClickhouseDataType) -> ScalarType {
 fn get_introspection_sql(
     request: &Option<SchemaRequest>,
     config: &Config,
-) -> Result<(&'static str, Vec<(String, String)>), ServerError> {
+) -> Result<(&'static str, ClickhouseParameters), ServerError> {
     if let Some(request) = request {
         let detail_level = request
             .detail_level
