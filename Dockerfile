@@ -37,7 +37,9 @@ RUN adduser \
 
 WORKDIR /app
 
-COPY ./ ./
+COPY ./Cargo.lock ./Cargo.lock
+COPY ./Cargo.toml ./Cargo.toml
+COPY ./src ./src
 
 RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
     set -x && cargo build --target aarch64-unknown-linux-musl --release; \
