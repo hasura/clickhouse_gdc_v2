@@ -1,5 +1,9 @@
 # ChangeLog
 
+## 2.35.2
+
+- fix introspection 2: only query for base tables and views
+
 ## 2.35.1
 
 - fix introspection
