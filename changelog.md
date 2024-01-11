@@ -1,5 +1,9 @@
 # ChangeLog
 
+## 2.36.0
+
+- fix introspection 3: instead of only showing tables in the current database schema, show tables from all schema except `system` and `INFORMATION_SCHEMA`
+
 ## 2.35.2
 
 - fix introspection 2: only query for base tables and views
