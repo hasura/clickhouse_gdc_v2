@@ -1,5 +1,6 @@
 SELECT
     tables.table_name AS "name",
+    tables.table_schema AS "table_schema",
     system_columns.primary_key AS "primary_key",
     tables.table_type AS "table_type",
     cast(
@@ -32,7 +33,7 @@ LEFT JOIN (
     GROUP BY system_columns.database, system_columns.table
 ) AS system_columns ON system_columns.database = tables.table_schema
 AND system_columns.table = tables.table_name
-WHERE tables.table_catalog = currentDatabase()
+WHERE tables.table_catalog NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema')
 AND tables.table_type IN ('BASE TABLE', 'VIEW')
 AND tables.table_name IN {table_names:Array(String)}
 FORMAT JSON;

@@ -318,8 +318,10 @@ fn relationship_target_table<'a>(
 }
 
 fn aliased_table_name(table: &TableName, config: &Config) -> Result<TableName, QueryBuilderError> {
-    let table_alias = match table.first() {
-        Some(table_alias) if table.len() == 1 => table_alias,
+    let mut qualified_table = table.clone();
+    let table_alias = qualified_table.pop();
+    let table_alias = match table_alias {
+        Some(table_alias) => table_alias,
         _ => return Err(QueryBuilderError::MisshapenTableName(table.to_owned())),
     };
     if let Some(tables) = &config.tables {
@@ -327,13 +329,16 @@ fn aliased_table_name(table: &TableName, config: &Config) -> Result<TableName, Q
             table_config
                 .alias
                 .as_ref()
-                .is_some_and(|alias| alias == table_alias)
+                .is_some_and(|alias| alias == &table_alias)
         }) {
-            return Ok(vec![table_config.name.to_owned()]);
+            qualified_table.push(table_config.name.to_owned());
+            return Ok(qualified_table);
         }
     }
 
-    Ok(vec![table_alias.to_owned()])
+    qualified_table.push(table_alias.to_owned());
+
+    Ok(qualified_table)
 }
 
 fn aliased_column_name(
@@ -341,8 +346,8 @@ fn aliased_column_name(
     column: &String,
     config: &Config,
 ) -> Result<String, QueryBuilderError> {
-    let table_alias = match table.first() {
-        Some(table_alias) if table.len() == 1 => table_alias,
+    let table_alias = match table.last() {
+        Some(table_alias) => table_alias,
         _ => return Err(QueryBuilderError::MisshapenTableName(table.to_owned())),
     };
 
