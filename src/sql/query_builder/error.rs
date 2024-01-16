@@ -47,7 +47,7 @@ impl Display for QueryBuilderError {
             ),
             QueryBuilderError::MisshapenTableName(table) => write!(
                 f,
-                "Misshapen table name, expected an array with a single string member, got {:?}",
+                "Misshapen table name, expected an array with at least a single string member, got {:?}",
                 table
             ),
             QueryBuilderError::UnknownScalarType(name) => {

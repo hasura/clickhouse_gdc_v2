@@ -46,6 +46,7 @@ enum IntrospectionTableType {
 #[derive(Debug, Serialize, Deserialize)]
 struct TableIntrospection {
     name: String,
+    table_schema: String,
     primary_key: Option<Vec<String>>,
     table_type: Option<IntrospectionTableType>,
     columns: Option<Vec<ColumnIntrospection>>,
@@ -78,6 +79,7 @@ fn get_schema_response(
             .map(|table| {
                 let TableIntrospection {
                     name: table_name,
+                    table_schema,
                     table_type,
                     primary_key,
                     columns,
@@ -115,7 +117,7 @@ fn get_schema_response(
                 };
 
                 Ok(TableInfo {
-                    name: vec![aliased_table_name(&table_name, config)],
+                    name: vec![aliased_table_name(&table_name, config), table_schema],
                     description: None,
                     r#type: table_type.map(|table_type| match table_type {
                         IntrospectionTableType::BaseTable => TableType::Table,
