@@ -117,7 +117,7 @@ fn get_schema_response(
                 };
 
                 Ok(TableInfo {
-                    name: vec![aliased_table_name(&table_name, config), table_schema],
+                    name: vec![table_schema, aliased_table_name(&table_name, config)],
                     description: None,
                     r#type: table_type.map(|table_type| match table_type {
                         IntrospectionTableType::BaseTable => TableType::Table,
