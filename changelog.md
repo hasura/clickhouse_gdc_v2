@@ -1,6 +1,6 @@
 # ChangeLog
 
-- fix introspection 4: when introspecting for specific tables, allow qualified table names. Note we only filter on talbe names with no regards for schemas, this may need to be fixed later
+- fix introspection 4: when introspecting for specific tables, allow qualified table names. Note we only filter on table names with no regards for schemas, this may need to be fixed later
 
 ## 2.36.0
 
