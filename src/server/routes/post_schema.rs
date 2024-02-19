@@ -369,13 +369,13 @@ fn get_introspection_sql(
             let table_names = tables
                 .iter()
                 .map(|table_name| {
-                    if let [name] = &table_name.as_slice() {
+                    if let Some(name) = table_name.last() {
                         Ok(name.to_owned())
                     } else {
                         Err(ServerError::UncaughtError {
                             details: None,
                             message: format!(
-                                "Expected table name to be an array with one element, got {:?}",
+                                "Expected table name to be an array with at least one element, got {:?}",
                                 table_name
                             ),
                             error_type: ErrorResponseType::UncaughtError,
