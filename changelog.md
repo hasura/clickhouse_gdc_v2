@@ -1,5 +1,7 @@
 # ChangeLog
 
+- fix introspection 4: when introspecting for specific tables, allow qualified table names. Note we only filter on table names with no regards for schemas, this may need to be fixed later
+
 ## 2.36.0
 
 - fix introspection 3: instead of only showing tables in the current database schema, show tables from all schema except `system` and `INFORMATION_SCHEMA`
