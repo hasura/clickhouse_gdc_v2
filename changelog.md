@@ -1,5 +1,14 @@
 # ChangeLog
 
+## 2.37.2
+
+- fix breaking change: don't use schema qualification for the `default` schema.
+  > Supporting non-default schema meant qualifying tables, which also meant introducing the schema name in the table name array.
+  > This was a breaking change for two reasons: older metadata needed to be updated to qualify tables with the `default` schema,
+  > and it also changed the generated hasura types. This fix removes the `default` schema from the table name array, but keeps any other schemas.
+
+## 2.37.1
+
 - fix introspection 4: when introspecting for specific tables, allow qualified table names. Note we only filter on table names with no regards for schemas, this may need to be fixed later
 
 ## 2.36.0

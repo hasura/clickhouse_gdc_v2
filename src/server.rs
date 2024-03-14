@@ -9,7 +9,7 @@ mod config;
 mod error;
 mod routes;
 use self::{error::ServerError, routes::*};
-pub use config::Config;
+pub use config::{Config, TableConfig};
 
 pub fn router() -> Router {
     Router::new()

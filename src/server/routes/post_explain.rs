@@ -10,7 +10,7 @@ use crate::{
         config::{SourceConfig, SourceName},
         error::ServerError,
     },
-    sql::{apply_aliases_to_query_request, QueryBuilder},
+    sql::QueryBuilder,
 };
 
 #[axum_macros::debug_handler]
@@ -19,8 +19,7 @@ pub async fn post_explain(
     SourceConfig(config): SourceConfig,
     WithRejection(Json(request), _): WithRejection<Json<QueryRequest>, ServerError>,
 ) -> Result<Json<ExplainResponse>, ServerError> {
-    let request = apply_aliases_to_query_request(request, &config)?;
-    let statement = QueryBuilder::build_sql_statement(&request, false)?;
+    let statement = QueryBuilder::build_sql_statement(&request, false, &config)?;
     let statement_string = statement.to_string();
     let explain_statement = format!("EXPLAIN {}", statement_string);
 

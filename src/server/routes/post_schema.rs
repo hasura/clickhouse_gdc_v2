@@ -4,7 +4,8 @@ use std::str::FromStr;
 use axum::Json;
 use axum_extra::extract::WithRejection;
 use gdc_rust_types::{
-    ColumnInfo, ColumnType, ErrorResponseType, SchemaRequest, SchemaResponse, TableInfo, TableType,
+    ColumnInfo, ColumnType, ErrorResponseType, SchemaRequest, SchemaResponse, TableInfo, TableName,
+    TableType,
 };
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +17,7 @@ use crate::server::{
         clickhouse_data_type::{ClickhouseDataType, Identifier},
         ScalarType,
     },
-    Config,
+    Config, TableConfig,
 };
 
 #[axum_macros::debug_handler]
@@ -85,6 +86,8 @@ fn get_schema_response(
                     columns,
                 } = table;
 
+                let table_config = get_table_config(config, &table_schema, &table_name);
+
                 let columns = if let Some(columns) = columns {
                     Some(
                         columns
@@ -101,7 +104,7 @@ fn get_schema_response(
                                     .unwrap_or(ScalarType::Unknown);
 
                                 Ok(ColumnInfo {
-                                    name: aliased_column_name(&table_name, &column_name, config),
+                                    name: get_column_alias(&table_config, &column_name),
                                     description: None,
                                     nullable,
                                     insertable: None,
@@ -117,7 +120,7 @@ fn get_schema_response(
                 };
 
                 Ok(TableInfo {
-                    name: vec![table_schema, aliased_table_name(&table_name, config)],
+                    name: get_table_alias(&table_config, &table_schema, &table_name),
                     description: None,
                     r#type: table_type.map(|table_type| match table_type {
                         IntrospectionTableType::BaseTable => TableType::Table,
@@ -137,41 +140,48 @@ fn get_schema_response(
     Ok(response)
 }
 
-fn aliased_table_name(table_name: &str, config: &Config) -> String {
-    if let Some(tables) = &config.tables {
-        if let Some(table_config) = tables
-            .iter()
-            .find(|table_config| table_config.name == table_name)
-        {
-            if let Some(alias) = &table_config.alias {
-                return alias.to_owned();
-            }
-        }
-    }
+fn get_table_config<'a>(
+    config: &'a Config,
+    table_schema: &str,
+    table_name: &str,
+) -> Option<&'a TableConfig> {
+    let matching_schema_name = |table_config: &TableConfig| match &table_config.schema {
+        Some(schema) => schema == table_schema,
+        None => table_schema == "default",
+    };
 
-    table_name.to_owned()
+    config.tables.as_ref().and_then(|tables| {
+        tables.iter().find(|table_config| {
+            table_config.name == table_name && matching_schema_name(table_config)
+        })
+    })
 }
 
-fn aliased_column_name(table_name: &str, column_name: &str, config: &Config) -> String {
-    if let Some(tables) = &config.tables {
-        if let Some(table_config) = tables
-            .iter()
-            .find(|table_config| table_config.name == table_name)
-        {
-            if let Some(columns) = &table_config.columns {
-                if let Some(column_config) = columns
-                    .iter()
-                    .find(|column_config| column_config.name == column_name)
-                {
-                    if let Some(alias) = &column_config.alias {
-                        return alias.to_owned();
-                    }
-                }
-            }
-        }
-    }
+fn get_table_alias(
+    table_config: &Option<&TableConfig>,
+    table_schema: &str,
+    table_name: &str,
+) -> TableName {
+    let aliased_table_name = table_config
+        .and_then(|table_config| table_config.alias.to_owned())
+        .unwrap_or_else(|| table_name.to_owned());
 
-    column_name.to_owned()
+    if table_schema == "default" {
+        vec![aliased_table_name]
+    } else {
+        vec![table_schema.to_owned(), aliased_table_name]
+    }
+}
+fn get_column_alias(table_config: &Option<&TableConfig>, column_name: &str) -> String {
+    table_config
+        .and_then(|table_config| table_config.columns.as_ref())
+        .and_then(|columns| {
+            columns
+                .iter()
+                .find(|column| column.name == column_name)
+                .and_then(|column_config| column_config.alias.to_owned())
+        })
+        .unwrap_or_else(|| column_name.to_owned())
 }
 
 fn get_scalar_type(data_type: &ClickhouseDataType) -> ScalarType {
