@@ -6,10 +6,13 @@ use super::ast::{
     TableWithJoins, UnaryOperator, Value,
 };
 use indexmap::IndexMap;
-pub mod aliasing;
+mod casting;
 mod error;
-use crate::server::schema;
+mod table_context;
+use crate::server::{schema, Config};
+use casting::{root_aggregates_type, root_foreach_row_type, root_rows_type};
 pub use error::QueryBuilderError;
+use table_context::TableContext;
 
 pub enum BoundParam {
     Number(serde_json::Number),
@@ -85,247 +88,34 @@ fn single_column_aggregate(function: &schema::SingleColumnAggregateFunction, col
     }
 }
 
-fn root_foreach_row_type(query: &gdc_rust_types::Query) -> Result<String, QueryBuilderError> {
-    Ok(format!("Array(Tuple(query {}))", query_object_type(query)?))
-}
-fn root_rows_type(
-    fields: &IndexMap<String, gdc_rust_types::Field>,
-) -> Result<String, QueryBuilderError> {
-    Ok(format!("Array({})", rows_object_type(fields)?))
-}
-fn root_aggregates_type(
-    aggregates: &IndexMap<String, gdc_rust_types::Aggregate>,
-) -> Result<String, QueryBuilderError> {
-    aggregates_object_type(aggregates)
-}
-
-fn query_object_type(query: &gdc_rust_types::Query) -> Result<String, QueryBuilderError> {
-    Ok(match (&query.fields, &query.aggregates) {
-        (None, None) => "Map(Nothing, Nothing)".to_owned(),
-        (Some(fields), None) => {
-            let fields_type = rows_object_type(fields)?;
-            format!("Tuple(rows Array({}))", fields_type)
-        }
-        (None, Some(aggregates)) => {
-            let aggregates_type = aggregates_object_type(aggregates)?;
-            format!("Tuple(aggregates {})", aggregates_type)
-        }
-        (Some(fields), Some(aggregates)) => {
-            let fields_type = rows_object_type(fields)?;
-            let aggregates_type = aggregates_object_type(aggregates)?;
-            format!(
-                "Tuple(rows Array({}), aggregates {})",
-                fields_type, aggregates_type
-            )
-        }
-    })
-}
-fn rows_object_type(
-    fields: &IndexMap<String, gdc_rust_types::Field>,
-) -> Result<String, QueryBuilderError> {
-    Ok(if fields.is_empty() {
-        "Map(Nothing, Nothing)".to_string()
-    } else {
-        let field_types = fields
-            .iter()
-            .map(|(column_name, field)| {
-                let field_type = match field {
-                    gdc_rust_types::Field::Column {
-                        column: _,
-                        column_type,
-                    } => type_cast_string(column_type)?,
-                    gdc_rust_types::Field::Relationship {
-                        query,
-                        relationship: _,
-                    } => query_object_type(query)?,
-                    gdc_rust_types::Field::Object { .. } => {
-                        return Err(QueryBuilderError::Internal(
-                            "Object fields not supported".to_string(),
-                        ))
-                    }
-                    gdc_rust_types::Field::Array { .. } => {
-                        return Err(QueryBuilderError::Internal(
-                            "Array fields not supported".to_string(),
-                        ))
-                    }
-                };
-                Ok(format!("\"{}\" {}", column_name, field_type))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        format!("Tuple({})", field_types.join(", "))
-    })
-}
-fn aggregates_object_type(
-    aggregates: &IndexMap<String, gdc_rust_types::Aggregate>,
-) -> Result<String, QueryBuilderError> {
-    Ok(if aggregates.is_empty() {
-        "Map(Nothing, Nothing)".to_string()
-    } else {
-        let aggregates_types = aggregates
-            .iter()
-            .map(|(column_name, aggregate)| {
-                let aggregate_type = match aggregate {
-                    // note! casting from UInt64 to UInt32 here
-                    // UInt64 is serialized as a JSON string, but test suite expects JSON numbers
-                    // todo: once we are able to specify return type for these aggregates, update this cast to the correct type
-                    gdc_rust_types::Aggregate::ColumnCount { .. } => "UInt32".to_owned(),
-                    gdc_rust_types::Aggregate::StarCount {} => "UInt32".to_owned(),
-                    gdc_rust_types::Aggregate::SingleColumn { result_type, .. } => {
-                        type_cast_string(result_type)?
-                    }
-                };
-                Ok(format!("\"{}\" {}", column_name, aggregate_type))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        format!("Tuple({})", aggregates_types.join(", "))
-    })
-}
-/// given a scalar type, return the type for the variant of this type that is nullable
-/// used when casting rows to named tuples, which is later used to cast to JSON
-/// we always wrap the type name in Nullable() as we don't know if the underlying column is nulable or not
-fn type_cast_string(scalar_type: &gdc_rust_types::ScalarType) -> Result<String, QueryBuilderError> {
-    let scalar_type = schema::ScalarType::from_str(scalar_type)
-        .map_err(|_err| QueryBuilderError::UnknownScalarType(scalar_type.to_owned()))?;
-    use schema::ScalarType as ST;
-    Ok(match scalar_type {
-        ST::Bool => "Nullable(Bool)",
-        ST::String => "Nullable(String)",
-        ST::FixedString => "Nullable(FixedString)",
-        ST::UInt8 => "Nullable(UInt8)",
-        ST::UInt16 => "Nullable(UInt16)",
-        ST::UInt32 => "Nullable(UInt32)",
-        ST::UInt64 => "Nullable(UInt64)",
-        ST::UInt128 => "Nullable(UInt128)",
-        ST::UInt256 => "Nullable(UInt256)",
-        ST::Int8 => "Nullable(Int8)",
-        ST::Int16 => "Nullable(Int16)",
-        ST::Int32 => "Nullable(Int32)",
-        ST::Int64 => "Nullable(Int64)",
-        ST::Int128 => "Nullable(Int128)",
-        ST::Int256 => "Nullable(Int256)",
-        ST::Float32 => "Nullable(Float32)",
-        ST::Float64 => "Nullable(Float64)",
-        // casting decimal to string. Not sure if this is correct.
-        // cannot cast to decimal without making a call on precision and scale
-        // could go for max precision, but impossible to know scale
-        ST::Decimal => "Nullable(String)",
-        ST::Date => "Nullable(Date)",
-        ST::Date32 => "Nullable(Date32)",
-        ST::DateTime => "Nullable(DateTime)",
-        ST::DateTime64 => "Nullable(DateTime64(9))",
-        ST::Json => "Nullable(JSON)",
-        ST::Uuid => "Nullable(UUID)",
-        ST::IPv4 => "Nullable(IPv4)",
-        ST::IPv6 => "Nullable(IPv6)",
-        ST::Unknown => "Nullable(String)",
-        // AggregateFunction types are not really meant to be looked at directly, casting to string for now
-        ST::AvgUInt8 => "Nullable(String)",
-        ST::AvgUInt16 => "Nullable(String)",
-        ST::AvgUInt32 => "Nullable(String)",
-        ST::AvgUInt64 => "Nullable(String)",
-        ST::AvgUInt128 => "Nullable(String)",
-        ST::AvgUInt256 => "Nullable(String)",
-        ST::AvgInt8 => "Nullable(String)",
-        ST::AvgInt16 => "Nullable(String)",
-        ST::AvgInt32 => "Nullable(String)",
-        ST::AvgInt64 => "Nullable(String)",
-        ST::AvgInt128 => "Nullable(String)",
-        ST::AvgInt256 => "Nullable(String)",
-        ST::AvgFloat32 => "Nullable(String)",
-        ST::AvgFloat64 => "Nullable(String)",
-        ST::AvgDecimal => "Nullable(String)",
-        ST::SumUInt8 => "Nullable(String)",
-        ST::SumUInt16 => "Nullable(String)",
-        ST::SumUInt32 => "Nullable(String)",
-        ST::SumUInt64 => "Nullable(String)",
-        ST::SumUInt128 => "Nullable(String)",
-        ST::SumUInt256 => "Nullable(String)",
-        ST::SumInt8 => "Nullable(String)",
-        ST::SumInt16 => "Nullable(String)",
-        ST::SumInt32 => "Nullable(String)",
-        ST::SumInt64 => "Nullable(String)",
-        ST::SumInt128 => "Nullable(String)",
-        ST::SumInt256 => "Nullable(String)",
-        ST::SumFloat32 => "Nullable(String)",
-        ST::SumFloat64 => "Nullable(String)",
-        ST::SumDecimal => "Nullable(String)",
-        ST::MaxUInt8 => "Nullable(String)",
-        ST::MaxUInt16 => "Nullable(String)",
-        ST::MaxUInt32 => "Nullable(String)",
-        ST::MaxUInt64 => "Nullable(String)",
-        ST::MaxUInt128 => "Nullable(String)",
-        ST::MaxUInt256 => "Nullable(String)",
-        ST::MaxInt8 => "Nullable(String)",
-        ST::MaxInt16 => "Nullable(String)",
-        ST::MaxInt32 => "Nullable(String)",
-        ST::MaxInt64 => "Nullable(String)",
-        ST::MaxInt128 => "Nullable(String)",
-        ST::MaxInt256 => "Nullable(String)",
-        ST::MaxFloat32 => "Nullable(String)",
-        ST::MaxFloat64 => "Nullable(String)",
-        ST::MaxDecimal => "Nullable(String)",
-        ST::MinUInt8 => "Nullable(String)",
-        ST::MinUInt16 => "Nullable(String)",
-        ST::MinUInt32 => "Nullable(String)",
-        ST::MinUInt64 => "Nullable(String)",
-        ST::MinUInt128 => "Nullable(String)",
-        ST::MinUInt256 => "Nullable(String)",
-        ST::MinInt8 => "Nullable(String)",
-        ST::MinInt16 => "Nullable(String)",
-        ST::MinInt32 => "Nullable(String)",
-        ST::MinInt64 => "Nullable(String)",
-        ST::MinInt128 => "Nullable(String)",
-        ST::MinInt256 => "Nullable(String)",
-        ST::MinFloat32 => "Nullable(String)",
-        ST::MinFloat64 => "Nullable(String)",
-        ST::MinDecimal => "Nullable(String)",
-        ST::MaxDate => "Nullable(String)",
-        ST::MaxDate32 => "Nullable(String)",
-        ST::MaxDateTime => "Nullable(String)",
-        ST::MaxDateTime64 => "Nullable(String)",
-        ST::MinDate => "Nullable(String)",
-        ST::MinDate32 => "Nullable(String)",
-        ST::MinDateTime => "Nullable(String)",
-        ST::MinDateTime64 => "Nullable(String)",
-    }
-    .to_owned())
-}
-
-pub struct QueryBuilder<'request> {
+pub struct QueryBuilder<'request, 'config> {
     request: &'request gdc_rust_types::QueryRequest,
     bind_params: bool,
     parameters: IndexMap<String, BoundParam>,
     parameter_index: i32,
+    config: &'config Config,
 }
 
-fn get_target_table(
-    target: &gdc_rust_types::Target,
-) -> Result<&gdc_rust_types::TableName, QueryBuilderError> {
-    match target {
-        gdc_rust_types::Target::Table { name } => Ok(name),
-        gdc_rust_types::Target::Interpolated { .. } => Err(QueryBuilderError::Internal(
-            "Interpolated targets not supported".to_string(),
-        )),
-        gdc_rust_types::Target::Function { .. } => Err(QueryBuilderError::Internal(
-            "Function targets not yet supported".to_string(),
-        )),
-    }
-}
-
-impl<'request> QueryBuilder<'request> {
-    fn new(request: &'request gdc_rust_types::QueryRequest, bind_params: bool) -> Self {
+impl<'request, 'config> QueryBuilder<'request, 'config> {
+    fn new(
+        request: &'request gdc_rust_types::QueryRequest,
+        bind_params: bool,
+        config: &'config Config,
+    ) -> Self {
         Self {
             request,
             bind_params,
             parameters: IndexMap::new(),
             parameter_index: 0,
+            config,
         }
     }
     pub fn build_sql_statement(
         request: &'request gdc_rust_types::QueryRequest,
         bind_params: bool,
+        config: &'config Config,
     ) -> Result<Statement, QueryBuilderError> {
-        let mut builder = Self::new(request, bind_params);
+        let mut builder = Self::new(request, bind_params, config);
 
         let query = builder.root_query()?;
 
@@ -335,15 +125,17 @@ impl<'request> QueryBuilder<'request> {
     }
     fn table_relationship(
         &self,
-        table: &gdc_rust_types::TableName,
+        table_context: &TableContext,
         relationship_name: &str,
     ) -> Result<&'request gdc_rust_types::Relationship, QueryBuilderError> {
         let source_table = self
             .request
             .relationships
             .iter()
-            .find(|table_relationships| table_relationships.source_table == *table)
-            .ok_or_else(|| QueryBuilderError::TableMissing(table.to_owned()))?;
+            .find(|table_relationships| {
+                table_relationships.source_table == *table_context.table_alias
+            })
+            .ok_or_else(|| QueryBuilderError::TableMissing(table_context.table_alias.to_owned()))?;
 
         let relationship = source_table
             .relationships
@@ -351,7 +143,7 @@ impl<'request> QueryBuilder<'request> {
             .ok_or_else(|| {
                 QueryBuilderError::RelationshipMissingInTable(
                     relationship_name.to_owned(),
-                    table.to_owned(),
+                    table_context.table_alias.to_owned(),
                 )
             })?;
 
@@ -359,7 +151,7 @@ impl<'request> QueryBuilder<'request> {
     }
     fn root_query(&mut self) -> Result<Query, QueryBuilderError> {
         let query = &self.request.query;
-        let table = get_target_table(&self.request.target)?;
+        let table = TableContext::try_from_target(&self.request.target, self.config)?;
 
         let root_subquery = match &self.request.foreach {
             Some(foreach) => {
@@ -402,14 +194,9 @@ impl<'request> QueryBuilder<'request> {
                 };
                 let foreach_columns: Vec<_> = foreach[0].keys().collect();
 
-                self.query_subquery(
-                    table,
-                    &vec![],
-                    query,
-                    Some((foreach_table, &foreach_columns)),
-                )?
+                self.query_subquery(&table, &[], query, Some((foreach_table, &foreach_columns)))?
             }
-            None => self.query_subquery(table, &vec![], query, None)?,
+            None => self.query_subquery(&table, &[], query, None)?,
         };
 
         let query_expr =
@@ -517,8 +304,8 @@ impl<'request> QueryBuilder<'request> {
     }
     fn query_subquery(
         &mut self,
-        table: &gdc_rust_types::TableName,
-        join_cols: &Vec<&String>,
+        table_context: &TableContext,
+        join_cols: &[&String],
         query: &gdc_rust_types::Query,
         foreach: Option<(TableFactor, &[&String])>,
     ) -> Result<Box<Query>, QueryBuilderError> {
@@ -529,7 +316,7 @@ impl<'request> QueryBuilder<'request> {
             None => (None, None),
             Some(fields) => {
                 let rows_subquery =
-                    self.rows_subquery(table, join_cols, fields, query, &foreach_columns)?;
+                    self.rows_subquery(table_context, join_cols, fields, query, &foreach_columns)?;
                 let rows_expr =
                     Expr::CompoundIdentifier(vec![Ident::quoted("_rows"), Ident::quoted("rows")]);
                 (Some(rows_subquery), Some(rows_expr))
@@ -539,7 +326,7 @@ impl<'request> QueryBuilder<'request> {
             None => (None, None),
             Some(aggregates) => {
                 let aggregates_subquery = self.aggregates_subquery(
-                    table,
+                    table_context,
                     join_cols,
                     aggregates,
                     query,
@@ -704,13 +491,14 @@ impl<'request> QueryBuilder<'request> {
     }
     fn rows_subquery(
         &mut self,
-        table: &gdc_rust_types::TableName,
+        table_context: &TableContext,
         join_cols: &[&String],
         fields: &IndexMap<String, gdc_rust_types::Field>,
         query: &gdc_rust_types::Query,
         foreach_columns: &Option<&[&String]>,
     ) -> Result<Box<Query>, QueryBuilderError> {
-        let row_subquery = self.row_subquery(table, join_cols, fields, query, foreach_columns)?;
+        let row_subquery =
+            self.row_subquery(table_context, join_cols, fields, query, foreach_columns)?;
 
         let column_exprs = fields
             .iter()
@@ -797,7 +585,7 @@ impl<'request> QueryBuilder<'request> {
     }
     fn row_subquery(
         &mut self,
-        table: &gdc_rust_types::TableName,
+        table_context: &TableContext,
         join_cols: &[&String],
         fields: &IndexMap<String, gdc_rust_types::Field>,
         query: &gdc_rust_types::Query,
@@ -805,7 +593,10 @@ impl<'request> QueryBuilder<'request> {
     ) -> Result<Box<Query>, QueryBuilderError> {
         let selection_columns_expressions =
             join_cols.iter().map(|&col| SelectItem::ExprWithAlias {
-                expr: Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(col)]),
+                expr: Expr::CompoundIdentifier(vec![
+                    Ident::quoted("_origin"),
+                    table_context.column_ident(col),
+                ]),
                 alias: Ident::quoted(format!("_selection.{col}")),
             });
 
@@ -818,7 +609,7 @@ impl<'request> QueryBuilder<'request> {
                 } => {
                     let identifier = Expr::CompoundIdentifier(vec![
                         Ident::quoted("_origin"),
-                        Ident::quoted(column),
+                        table_context.column_ident(column),
                     ]);
                     let column_type = schema::ScalarType::from_str(column_type).map_err(|_| {
                         QueryBuilderError::UnknownScalarType(column_type.to_owned())
@@ -857,7 +648,7 @@ impl<'request> QueryBuilder<'request> {
                 .map(|&col| SelectItem::ExprWithAlias {
                     expr: Expr::CompoundIdentifier(vec![
                         Ident::quoted("_origin"),
-                        Ident::quoted(col),
+                        table_context.column_ident(col),
                     ]),
                     alias: Ident::quoted(format!("_foreach.{col}")),
                 })
@@ -866,7 +657,7 @@ impl<'request> QueryBuilder<'request> {
         };
 
         let (row_order_by, order_by_joins) =
-            self.order_by_expressions_joins(table, &query.order_by)?;
+            self.order_by_expressions_joins(table_context, &query.order_by)?;
 
         let partition_cols = match foreach_columns {
             Some(foreach_columns) => join_cols.iter().chain(*foreach_columns).copied().collect(),
@@ -892,7 +683,7 @@ impl<'request> QueryBuilder<'request> {
                     &mut exists_index,
                     true,
                     "_origin",
-                    table,
+                    table_context,
                 )?;
                 (Some(expr), joins)
             }
@@ -909,7 +700,9 @@ impl<'request> QueryBuilder<'request> {
                 _ => None,
             })
             .map(|(alias, query, relationship)| {
-                let relationship = self.table_relationship(table, relationship)?;
+                let relationship = self.table_relationship(table_context, relationship)?;
+                let relationship_table_context =
+                    TableContext::try_from_target(&relationship.target, self.config)?;
 
                 let join_expr = relationship
                     .column_mapping
@@ -917,7 +710,7 @@ impl<'request> QueryBuilder<'request> {
                     .map(|(source_col, target_col)| Expr::BinaryOp {
                         left: Box::new(Expr::CompoundIdentifier(vec![
                             Ident::quoted("_origin"),
-                            Ident::quoted(source_col),
+                            table_context.column_ident(source_col),
                         ])),
                         op: BinaryOperator::Eq,
                         right: Box::new(Expr::CompoundIdentifier(vec![
@@ -928,15 +721,13 @@ impl<'request> QueryBuilder<'request> {
                     .reduce(and_reducer)
                     .unwrap_or(Expr::Value(Value::Boolean(true)));
 
-                let join_cols = &relationship.column_mapping.values().collect();
-
-                let relationship_table = get_target_table(&relationship.target)?;
+                let join_cols: Vec<_> = relationship.column_mapping.values().collect();
 
                 Ok(Join {
                     relation: TableFactor::Derived {
                         subquery: self.query_subquery(
-                            relationship_table,
-                            join_cols,
+                            &relationship_table_context,
+                            &join_cols, // these are used so the child table knows what columns it needs. perhaps they should be aliased first?
                             query,
                             None,
                         )?,
@@ -949,7 +740,7 @@ impl<'request> QueryBuilder<'request> {
 
         let row_from = vec![TableWithJoins {
             relation: TableFactor::Table {
-                name: ObjectName(table.iter().map(Ident::quoted).collect()),
+                name: table_context.table_ident(),
                 alias: Some(Ident::quoted("_origin")),
             },
             joins: relationship_joins
@@ -978,14 +769,14 @@ impl<'request> QueryBuilder<'request> {
     }
     fn aggregates_subquery(
         &mut self,
-        table: &gdc_rust_types::TableName,
+        table_context: &TableContext,
         join_cols: &[&String],
         aggregates: &IndexMap<String, gdc_rust_types::Aggregate>,
         query: &gdc_rust_types::Query,
         foreach_columns: &Option<&[&String]>,
     ) -> Result<Box<Query>, QueryBuilderError> {
         let aggregate_subquery =
-            self.aggregate_subquery(table, join_cols, aggregates, query, foreach_columns)?;
+            self.aggregate_subquery(table_context, join_cols, aggregates, query, foreach_columns)?;
         let column_exprs = aggregates
             .iter()
             .map(|(alias, field)| {
@@ -1099,7 +890,7 @@ impl<'request> QueryBuilder<'request> {
     }
     fn aggregate_subquery(
         &mut self,
-        table: &gdc_rust_types::TableName,
+        table_context: &TableContext,
         join_cols: &[&String],
         aggregates: &IndexMap<String, gdc_rust_types::Aggregate>,
         query: &gdc_rust_types::Query,
@@ -1107,7 +898,10 @@ impl<'request> QueryBuilder<'request> {
     ) -> Result<Box<Query>, QueryBuilderError> {
         let selection_columns_expressions =
             join_cols.iter().map(|&col| SelectItem::ExprWithAlias {
-                expr: Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(col)]),
+                expr: Expr::CompoundIdentifier(vec![
+                    Ident::quoted("_origin"),
+                    table_context.column_ident(col),
+                ]),
                 alias: Ident::quoted(format!("_selection.{col}")),
             });
 
@@ -1118,7 +912,7 @@ impl<'request> QueryBuilder<'request> {
                     Some(SelectItem::ExprWithAlias {
                         expr: Expr::CompoundIdentifier(vec![
                             Ident::quoted("_origin"),
-                            Ident::quoted(column),
+                            table_context.column_ident(column),
                         ]),
                         alias: Ident::quoted(format!("_projection.{alias}")),
                     })
@@ -1132,7 +926,7 @@ impl<'request> QueryBuilder<'request> {
                 .map(|&col| SelectItem::ExprWithAlias {
                     expr: Expr::CompoundIdentifier(vec![
                         Ident::quoted("_origin"),
-                        Ident::quoted(col),
+                        table_context.column_ident(col),
                     ]),
                     alias: Ident::quoted(format!("_foreach.{col}")),
                 })
@@ -1140,7 +934,8 @@ impl<'request> QueryBuilder<'request> {
             None => vec![],
         };
 
-        let (order_by, order_by_joins) = self.order_by_expressions_joins(table, &query.order_by)?;
+        let (order_by, order_by_joins) =
+            self.order_by_expressions_joins(table_context, &query.order_by)?;
 
         let partition_cols = match foreach_columns {
             Some(foreach_columns) => join_cols.iter().chain(*foreach_columns).copied().collect(),
@@ -1166,7 +961,7 @@ impl<'request> QueryBuilder<'request> {
                     &mut exists_index,
                     true,
                     "_origin",
-                    table,
+                    table_context,
                 )?;
                 (Some(expr), joins)
             }
@@ -1175,7 +970,7 @@ impl<'request> QueryBuilder<'request> {
 
         let aggregate_from = vec![TableWithJoins {
             relation: TableFactor::Table {
-                name: ObjectName(table.iter().map(Ident::quoted).collect()),
+                name: table_context.table_ident(),
                 alias: Some(Ident::quoted("_origin")),
             },
             joins: exists_joins.into_iter().chain(order_by_joins).collect(),
@@ -1183,7 +978,12 @@ impl<'request> QueryBuilder<'request> {
 
         let partion_rows_by = partition_cols
             .into_iter()
-            .map(|col| Expr::CompoundIdentifier(vec![Ident::quoted("_origin"), Ident::quoted(col)]))
+            .map(|col| {
+                Expr::CompoundIdentifier(vec![
+                    Ident::quoted("_origin"),
+                    table_context.column_ident(col),
+                ])
+            })
             .collect::<Vec<_>>();
 
         let (limit_by, limit, offset) =
@@ -1200,7 +1000,7 @@ impl<'request> QueryBuilder<'request> {
     }
     fn order_by_expressions_joins(
         &mut self,
-        table: &gdc_rust_types::TableName,
+        table_context: &TableContext,
         order_by: &Option<gdc_rust_types::OrderBy>,
     ) -> Result<(Vec<OrderByExpr>, Vec<Join>), QueryBuilderError> {
         match order_by {
@@ -1208,7 +1008,7 @@ impl<'request> QueryBuilder<'request> {
             Some(order_by) => {
                 // discard parent columns at the root level, since all columns are exposed on origin
                 let (_, order_by_joins) =
-                    self.order_by_joins(table, &vec![], &order_by.relations, order_by)?;
+                    self.order_by_joins(table_context, &[], &order_by.relations, order_by)?;
 
                 let order_by = order_by
                     .elements
@@ -1395,8 +1195,8 @@ impl<'request> QueryBuilder<'request> {
     }
     fn order_by_joins(
         &mut self,
-        table: &gdc_rust_types::TableName,
-        source_path: &Vec<String>,
+        table_context: &TableContext,
+        source_path: &[String],
         relations: &IndexMap<String, gdc_rust_types::OrderByRelation>,
         order_by: &gdc_rust_types::OrderBy,
     ) -> Result<(Vec<String>, Vec<Join>), QueryBuilderError> {
@@ -1408,7 +1208,7 @@ impl<'request> QueryBuilder<'request> {
             format!("_ord.{}", source_path.join("."))
         };
         for (relationship_name, order_by_relation) in relations {
-            let relationship = self.table_relationship(table, relationship_name)?;
+            let relationship = self.table_relationship(table_context, relationship_name)?;
 
             // parent table will need to expose these columns for this table to join on
             for column in relationship.column_mapping.keys() {
@@ -1417,14 +1217,15 @@ impl<'request> QueryBuilder<'request> {
                 }
             }
 
-            let child_path = [&source_path[..], &[relationship_name.to_owned()]].concat();
+            let child_path = [source_path, &[relationship_name.to_owned()]].concat();
             let child_alias = format!("_ord.{}", child_path.join("."));
 
-            let relationship_table = get_target_table(&relationship.target)?;
+            let relationship_table_context =
+                TableContext::try_from_target(&relationship.target, self.config)?;
 
             // child columns will be used by subsequent joins to join to this table
             let (child_columns, child_joins) = self.order_by_joins(
-                relationship_table,
+                &relationship_table_context,
                 &child_path,
                 &order_by_relation.subrelations,
                 order_by,
@@ -1483,7 +1284,8 @@ impl<'request> QueryBuilder<'request> {
                             function,
                             result_type: _,
                         } => {
-                            let column_expr = Expr::Identifier(Ident::quoted(column));
+                            let column_expr =
+                                Expr::Identifier(relationship_table_context.column_ident(column));
                             let function = schema::SingleColumnAggregateFunction::from_str(
                                 function,
                             )
@@ -1504,7 +1306,7 @@ impl<'request> QueryBuilder<'request> {
                                 }
                                 gdc_rust_types::ColumnSelector::Name(name) => name,
                             };
-                            Expr::Identifier(Ident::quoted(column))
+                            Expr::Identifier(relationship_table_context.column_ident(column))
                         }
                     };
                     let projection_col = SelectItem::ExprWithAlias {
@@ -1523,7 +1325,8 @@ impl<'request> QueryBuilder<'request> {
                             }
                             gdc_rust_types::ColumnSelector::Name(name) => name,
                         };
-                        let group_by_col = Expr::Identifier(Ident::quoted(column));
+                        let group_by_col =
+                            Expr::Identifier(relationship_table_context.column_ident(column));
                         group_by_cols.insert(column, group_by_col);
                     }
                 }
@@ -1534,13 +1337,14 @@ impl<'request> QueryBuilder<'request> {
                 let col_alias = format!("_col.{column}");
                 if !projection_cols.contains_key(&col_alias) {
                     let projection_col = SelectItem::ExprWithAlias {
-                        expr: Expr::Identifier(Ident::quoted(column)),
+                        expr: Expr::Identifier(relationship_table_context.column_ident(column)),
                         alias: Ident::quoted(col_alias.clone()),
                     };
                     projection_cols.insert(col_alias, projection_col);
                 }
                 if !group_by_cols.contains_key(column) {
-                    let group_by_col = Expr::Identifier(Ident::quoted(column));
+                    let group_by_col =
+                        Expr::Identifier(relationship_table_context.column_ident(column));
                     group_by_cols.insert(column, group_by_col);
                 }
             }
@@ -1549,13 +1353,14 @@ impl<'request> QueryBuilder<'request> {
                 let col_alias = format!("_col.{column}");
                 if !projection_cols.contains_key(&col_alias) {
                     let projection_col = SelectItem::ExprWithAlias {
-                        expr: Expr::Identifier(Ident::quoted(column)),
+                        expr: Expr::Identifier(relationship_table_context.column_ident(column)),
                         alias: Ident::quoted(col_alias.clone()),
                     };
                     projection_cols.insert(col_alias, projection_col);
                 }
                 if !group_by_cols.contains_key(column) {
-                    let group_by_col = Expr::Identifier(Ident::quoted(column));
+                    let group_by_col =
+                        Expr::Identifier(relationship_table_context.column_ident(column));
                     group_by_cols.insert(column, group_by_col);
                 }
             }
@@ -1568,7 +1373,7 @@ impl<'request> QueryBuilder<'request> {
                         &mut exists_index,
                         true,
                         "_origin",
-                        relationship_table,
+                        &relationship_table_context,
                     )?;
                     (Some(expr), joins)
                 }
@@ -1579,12 +1384,7 @@ impl<'request> QueryBuilder<'request> {
             let join_projection = projection_cols.into_values().collect();
             let join_from = vec![TableWithJoins {
                 relation: TableFactor::Table {
-                    name: ObjectName(
-                        get_target_table(&relationship.target)?
-                            .iter()
-                            .map(Ident::quoted)
-                            .collect(),
-                    ),
+                    name: relationship_table_context.table_ident(),
                     alias: Some(Ident::quoted("_origin")),
                 },
                 joins: exists_joins,
@@ -1609,11 +1409,11 @@ impl<'request> QueryBuilder<'request> {
                         .map(|(source_col, target_col)| Expr::BinaryOp {
                             left: Box::new(Expr::CompoundIdentifier(vec![
                                 Ident::quoted(parent_alias.clone()),
-                                Ident::quoted(if source_path.is_empty() {
-                                    source_col.clone()
+                                if source_path.is_empty() {
+                                    table_context.column_ident(source_col)
                                 } else {
-                                    format!("_col.{source_col}")
-                                }),
+                                    Ident::quoted(format!("_col.{source_col}"))
+                                },
                             ])),
                             op: BinaryOperator::Eq,
                             right: Box::new(Expr::CompoundIdentifier(vec![
@@ -1637,7 +1437,7 @@ impl<'request> QueryBuilder<'request> {
         exists_index: &mut usize,
         origin: bool,
         table_alias: &str,
-        table: &gdc_rust_types::TableName,
+        table_context: &TableContext,
     ) -> Result<(Expr, Vec<Join>), QueryBuilderError> {
         match expression {
             gdc_rust_types::Expression::And { expressions } => {
@@ -1649,7 +1449,7 @@ impl<'request> QueryBuilder<'request> {
                             exists_index,
                             origin,
                             table_alias,
-                            table,
+                            table_context,
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1682,7 +1482,7 @@ impl<'request> QueryBuilder<'request> {
                             exists_index,
                             origin,
                             table_alias,
-                            table,
+                            table_context,
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1713,7 +1513,7 @@ impl<'request> QueryBuilder<'request> {
                     exists_index,
                     origin,
                     table_alias,
-                    table,
+                    table_context,
                 )?;
                 let expr = Expr::UnaryOp {
                     op: UnaryOperator::Not,
@@ -1722,7 +1522,7 @@ impl<'request> QueryBuilder<'request> {
                 Ok((expr, joins))
             }
             gdc_rust_types::Expression::ApplyUnaryComparison { column, operator } => {
-                let expr = Box::new(self.comparison_column(table_alias, column)?);
+                let expr = Box::new(self.comparison_column(table_alias, table_context, column)?);
                 let expr = match operator {
                     gdc_rust_types::UnaryComparisonOperator::IsNull => {
                         Expr::IsNull(Box::new(Expr::Nested(expr)))
@@ -1740,7 +1540,7 @@ impl<'request> QueryBuilder<'request> {
                 operator,
                 value,
             } => {
-                let left = Box::new(self.comparison_column(table_alias, column)?);
+                let left = Box::new(self.comparison_column(table_alias, table_context, column)?);
 
                 let right = match value {
                     gdc_rust_types::ComparisonValue::Scalar { value, value_type } => {
@@ -1793,7 +1593,7 @@ impl<'request> QueryBuilder<'request> {
                 value_type,
                 values,
             } => {
-                let expr = Box::new(self.comparison_column(table_alias, column)?);
+                let expr = Box::new(self.comparison_column(table_alias, table_context, column)?);
                 let value_type = schema::ScalarType::from_str(value_type)
                     .map_err(|_err| QueryBuilderError::UnknownScalarType(value_type.to_owned()))?;
                 let list = values
@@ -1825,119 +1625,113 @@ impl<'request> QueryBuilder<'request> {
 
                     // assuming the only columns we care about are join columns.
                     // this may not be true if we support column comparison operators.
-                    let (select_expr, join_expr, table_name, projection, group_by, limit) =
-                        match in_table {
-                            gdc_rust_types::ExistsInTable::Unrelated { table } => {
-                                let left = Expr::CompoundIdentifier(vec![
-                                    Ident::quoted(join_alias.clone()), // note: this is the alias of the join. Should be dynamic
-                                    Ident::quoted("_exists"),
-                                ]);
-                                let right = Expr::Value(Value::Boolean(true));
-                                let select_expr = Expr::BinaryOp {
-                                    left: Box::new(left),
-                                    op: BinaryOperator::Eq,
-                                    right: Box::new(right),
-                                };
+                    let (
+                        select_expr,
+                        join_expr,
+                        relationship_table_context,
+                        projection,
+                        group_by,
+                        limit,
+                    ) = match in_table {
+                        gdc_rust_types::ExistsInTable::Unrelated { table } => {
+                            let left = Expr::CompoundIdentifier(vec![
+                                Ident::quoted(join_alias.clone()), // note: this is the alias of the join. Should be dynamic
+                                Ident::quoted("_exists"),
+                            ]);
+                            let right = Expr::Value(Value::Boolean(true));
+                            let select_expr = Expr::BinaryOp {
+                                left: Box::new(left),
+                                op: BinaryOperator::Eq,
+                                right: Box::new(right),
+                            };
 
-                                let join_expr = Expr::Value(Value::Boolean(true));
+                            let join_expr = Expr::Value(Value::Boolean(true));
 
-                                let table_name = table;
-                                let projection = vec![SelectItem::ExprWithAlias {
-                                    expr: Expr::Value(Value::Boolean(true)),
-                                    alias: Ident::quoted("_exists"),
-                                }];
-                                let group_by = vec![];
-                                let limit = Some(1);
-                                (
-                                    select_expr,
-                                    join_expr,
-                                    table_name,
-                                    projection,
-                                    group_by,
-                                    limit,
-                                )
-                            }
-                            gdc_rust_types::ExistsInTable::Related { relationship } => {
-                                let relationship = self.table_relationship(table, relationship)?;
+                            let relationship_table_context =
+                                TableContext::try_from_name(table, self.config)?;
+                            let projection = vec![SelectItem::ExprWithAlias {
+                                expr: Expr::Value(Value::Boolean(true)),
+                                alias: Ident::quoted("_exists"),
+                            }];
+                            let group_by = vec![];
+                            let limit = Some(1);
+                            (
+                                select_expr,
+                                join_expr,
+                                relationship_table_context,
+                                projection,
+                                group_by,
+                                limit,
+                            )
+                        }
+                        gdc_rust_types::ExistsInTable::Related { relationship } => {
+                            let relationship =
+                                self.table_relationship(table_context, relationship)?;
+                            let relationship_table_context =
+                                TableContext::try_from_target(&relationship.target, self.config)?;
 
-                                let select_expr = relationship
-                                    .column_mapping
-                                    .iter()
-                                    .map(|(source_col, target_col)| {
-                                        let left = Expr::CompoundIdentifier(vec![
-                                            Ident::quoted(join_alias.clone()), // note: this is the alias of the join. Should be dynamic
-                                            Ident::quoted(target_col),
-                                        ]);
-                                        let right = Expr::CompoundIdentifier(vec![
-                                            Ident::quoted(table_alias), // should be alias of parent table
-                                            Ident::quoted(source_col),
-                                        ]);
-                                        Expr::BinaryOp {
-                                            left: Box::new(left),
-                                            op: BinaryOperator::Eq,
-                                            right: Box::new(right),
-                                        }
-                                    })
-                                    .reduce(and_reducer)
-                                    .map(|expr| match expr {
-                                        Expr::BinaryOp {
-                                            op: BinaryOperator::And,
-                                            ..
-                                        } => Expr::Nested(Box::new(expr)),
-                                        _ => expr,
-                                    })
-                                    .unwrap_or(Expr::Value(Value::Boolean(true)));
-                                let join_expr = select_expr.clone();
-
-                                let projection = relationship
-                                    .column_mapping
-                                    .iter()
-                                    .map(|(_, target_col)| SelectItem::ExprWithAlias {
-                                        expr: Expr::CompoundIdentifier(vec![
-                                            Ident::quoted(join_alias.clone()),
-                                            Ident::quoted(target_col),
-                                        ]),
-                                        alias: Ident::quoted(target_col),
-                                    })
-                                    .collect();
-                                let group_by = relationship
-                                    .column_mapping
-                                    .iter()
-                                    .map(|(_, target_col)| {
-                                        Expr::CompoundIdentifier(vec![
-                                            Ident::quoted(join_alias.clone()),
-                                            Ident::quoted(target_col),
-                                        ])
-                                    })
-                                    .collect();
-                                let limit = None;
-
-                                let relationship_table = match &relationship.target {
-                                    gdc_rust_types::Target::Table { name } => name,
-                                    gdc_rust_types::Target::Interpolated { .. } => {
-                                        return Err(QueryBuilderError::Internal(
-                                            "Relationships to Interpolated tables not supported"
-                                                .to_string(),
-                                        ))
+                            let select_expr = relationship
+                                .column_mapping
+                                .iter()
+                                .map(|(source_col, target_col)| {
+                                    let left = Expr::CompoundIdentifier(vec![
+                                        Ident::quoted(join_alias.clone()), // note: this is the alias of the join. Should be dynamic
+                                        relationship_table_context.column_ident(target_col),
+                                    ]);
+                                    let right = Expr::CompoundIdentifier(vec![
+                                        Ident::quoted(table_alias), // should be alias of parent table
+                                        table_context.column_ident(source_col),
+                                    ]);
+                                    Expr::BinaryOp {
+                                        left: Box::new(left),
+                                        op: BinaryOperator::Eq,
+                                        right: Box::new(right),
                                     }
-                                    gdc_rust_types::Target::Function { .. } => {
-                                        return Err(QueryBuilderError::Internal(
-                                            "Relationships to Function tables not supported"
-                                                .to_string(),
-                                        ))
-                                    }
-                                };
+                                })
+                                .reduce(and_reducer)
+                                .map(|expr| match expr {
+                                    Expr::BinaryOp {
+                                        op: BinaryOperator::And,
+                                        ..
+                                    } => Expr::Nested(Box::new(expr)),
+                                    _ => expr,
+                                })
+                                .unwrap_or(Expr::Value(Value::Boolean(true)));
+                            let join_expr = select_expr.clone();
 
-                                (
-                                    select_expr,
-                                    join_expr,
-                                    relationship_table,
-                                    projection,
-                                    group_by,
-                                    limit,
-                                )
-                            }
-                        };
+                            let projection = relationship
+                                .column_mapping
+                                .iter()
+                                .map(|(_, target_col)| SelectItem::ExprWithAlias {
+                                    expr: Expr::CompoundIdentifier(vec![
+                                        Ident::quoted(join_alias.clone()),
+                                        relationship_table_context.column_ident(target_col),
+                                    ]),
+                                    alias: Ident::quoted(target_col), // todo: should this be aliased???
+                                })
+                                .collect();
+                            let group_by = relationship
+                                .column_mapping
+                                .iter()
+                                .map(|(_, target_col)| {
+                                    Expr::CompoundIdentifier(vec![
+                                        Ident::quoted(join_alias.clone()),
+                                        relationship_table_context.column_ident(target_col),
+                                    ])
+                                })
+                                .collect();
+                            let limit = None;
+
+                            (
+                                select_expr,
+                                join_expr,
+                                relationship_table_context,
+                                projection,
+                                group_by,
+                                limit,
+                            )
+                        }
+                    };
 
                     let mut subquery_exists_index = 0;
 
@@ -1946,12 +1740,12 @@ impl<'request> QueryBuilder<'request> {
                         &mut subquery_exists_index,
                         false,
                         &join_alias,
-                        table_name,
+                        &relationship_table_context,
                     )?;
 
                     let from = vec![TableWithJoins {
                         relation: TableFactor::Table {
-                            name: ObjectName(table_name.iter().map(Ident::quoted).collect()),
+                            name: relationship_table_context.table_ident(),
                             alias: Some(Ident::quoted(join_alias.clone())),
                         },
                         joins,
@@ -1977,8 +1771,10 @@ impl<'request> QueryBuilder<'request> {
                     let join_alias = format!("{}.{}", table_alias, exists_index);
                     *exists_index += 1;
 
-                    let (select_expr, join_expr, table_name) = match in_table {
+                    let (select_expr, join_expr, relationship_table_context) = match in_table {
                         gdc_rust_types::ExistsInTable::Unrelated { table } => {
+                            let relationship_table_context =
+                                TableContext::try_from_name(table, self.config)?;
                             let left = Expr::CompoundIdentifier(vec![
                                 Ident::quoted(join_alias.clone()), // note: this is the alias of the join. Should be dynamic
                                 Ident::quoted("_exists"),
@@ -1992,11 +1788,13 @@ impl<'request> QueryBuilder<'request> {
 
                             let join_expr = Expr::Value(Value::Boolean(true));
 
-                            let table_name = table;
-                            (select_expr, join_expr, table_name)
+                            (select_expr, join_expr, relationship_table_context)
                         }
                         gdc_rust_types::ExistsInTable::Related { relationship } => {
-                            let relationship = self.table_relationship(table, relationship)?;
+                            let relationship =
+                                self.table_relationship(table_context, relationship)?;
+                            let relationship_table_context =
+                                TableContext::try_from_target(&relationship.target, self.config)?;
 
                             let select_expr = relationship
                                 .column_mapping
@@ -2004,11 +1802,11 @@ impl<'request> QueryBuilder<'request> {
                                 .map(|(source_col, target_col)| {
                                     let left = Expr::CompoundIdentifier(vec![
                                         Ident::quoted(join_alias.clone()), // note: this is the alias of the join. Should be dynamic
-                                        Ident::quoted(target_col),
+                                        relationship_table_context.column_ident(target_col),
                                     ]);
                                     let right = Expr::CompoundIdentifier(vec![
                                         Ident::quoted(table_alias), // should be alias of parent table
-                                        Ident::quoted(source_col),
+                                        table_context.column_ident(source_col),
                                     ]);
                                     Expr::BinaryOp {
                                         left: Box::new(left),
@@ -2027,9 +1825,7 @@ impl<'request> QueryBuilder<'request> {
                                 .unwrap_or(Expr::Value(Value::Boolean(true)));
                             let join_expr = select_expr.clone();
 
-                            let relationship_table = get_target_table(&relationship.target)?;
-
-                            (select_expr, join_expr, relationship_table)
+                            (select_expr, join_expr, relationship_table_context)
                         }
                     };
 
@@ -2038,13 +1834,13 @@ impl<'request> QueryBuilder<'request> {
                         exists_index,
                         false,
                         &join_alias,
-                        table_name,
+                        &relationship_table_context,
                     )?;
 
                     let join = Join {
                         join_operator: JoinOperator::LeftOuter(JoinConstraint::On(join_expr)),
                         relation: TableFactor::Table {
-                            name: ObjectName(table_name.iter().map(Ident::quoted).collect()),
+                            name: relationship_table_context.table_ident(),
                             alias: Some(Ident::quoted(join_alias)),
                         },
                     };
@@ -2065,6 +1861,7 @@ impl<'request> QueryBuilder<'request> {
     fn comparison_column(
         &mut self,
         table_alias: &str,
+        table_context: &TableContext,
         column: &gdc_rust_types::ComparisonColumn,
     ) -> Result<Expr, QueryBuilderError> {
         if let Some(path) = &column.path {
@@ -2084,8 +1881,10 @@ impl<'request> QueryBuilder<'request> {
             gdc_rust_types::ColumnSelector::Name(name) => name,
         };
 
-        let expr =
-            Expr::CompoundIdentifier(vec![Ident::quoted(table_alias), Ident::quoted(column_name)]);
+        let expr = Expr::CompoundIdentifier(vec![
+            Ident::quoted(table_alias),
+            table_context.column_ident(column_name),
+        ]);
 
         Ok(expr)
     }
