@@ -119,6 +119,13 @@ fn get_schema_response(
                     None
                 };
 
+                let primary_key = primary_key.map(|primary_key| {
+                    primary_key
+                        .into_iter()
+                        .map(|column| get_column_alias(&table_config, &column))
+                        .collect()
+                });
+
                 Ok(TableInfo {
                     name: get_table_alias(&table_config, &table_schema, &table_name),
                     description: None,
