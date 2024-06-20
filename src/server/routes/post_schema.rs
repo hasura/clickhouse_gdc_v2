@@ -38,9 +38,13 @@ pub async fn post_schema(
 
 #[derive(Debug, Serialize, Deserialize)]
 enum IntrospectionTableType {
-    #[serde(rename = "BASE TABLE")]
+    #[serde(
+        rename = "BASE TABLE",
+        alias = "FOREIGN TABLE",
+        alias = "LOCAL TEMPORARY"
+    )]
     BaseTable,
-    #[serde(rename = "VIEW")]
+    #[serde(rename = "VIEW", alias = "SYSTEM VIEW")]
     View,
 }
 
