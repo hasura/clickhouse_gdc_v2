@@ -26,6 +26,8 @@ pub struct Config {
 pub struct TableConfig {
     /// The table name
     pub name: String,
+    /// The table schema (optional, defaults to "default")
+    pub schema: Option<String>,
     /// Optional alias for this table. Required if the table name is not a valid graphql name
     pub alias: Option<String>,
     /// Optional configuration for table columns
@@ -114,6 +116,12 @@ pub fn get_openapi_config_schema_response() -> ConfigSchemaResponse {
                             "title": "Name",
                             "description": "The table name",
                             "nullable": false,
+                            "type": "string"
+                        },
+                        "schema": {
+                            "title": "Schema",
+                            "description": "Optional schema qualifying this table. Defaults to 'default' if omitted",
+                            "nullable": true,
                             "type": "string"
                         },
                         "alias": {
