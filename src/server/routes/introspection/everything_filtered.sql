@@ -34,6 +34,5 @@ LEFT JOIN (
 ) AS system_columns ON system_columns.database = tables.table_schema
 AND system_columns.table = tables.table_name
 WHERE tables.table_catalog NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema')
-AND tables.table_type IN ('BASE TABLE', 'VIEW')
 AND tables.table_name IN {table_names:Array(String)}
 FORMAT JSON;

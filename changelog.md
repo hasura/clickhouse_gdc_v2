@@ -1,5 +1,9 @@
 # ChangeLog
 
+## 2.40.0
+
+- Support all table types (previously only supported BASE TABLE and VIEW)
+
 ## 2.37.2
 
 - fix breaking change: don't use schema qualification for the `default` schema.
