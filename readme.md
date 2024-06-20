@@ -7,7 +7,7 @@ This repository also contains a Dockerfile to be able to build an image in your 
 
 ## Status
 
-The project is currently feature complete, but may not be stable.
+The project is currently feature complete.
 Please report any bugs by filing issues in this repo.
 
 ### Known issues & limitations
