@@ -1,7 +1,7 @@
 ####################################################################################################
 ## Builder
 ####################################################################################################
-FROM rust:1.73-alpine3.18 AS builder
+FROM us-docker.pkg.dev/hasura-container-images/external-images/docker.io/library/rust:1.73-alpine3.18-stable AS builder
 
 ARG TARGETPLATFORM
 
